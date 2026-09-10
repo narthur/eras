@@ -25,6 +25,26 @@ A Durable Object only exists once something asks for it, and there is no cron
 trigger, so a freshly deployed world does not begin until the first visit. After
 that the alarm chain carries it on its own, watched or not.
 
+## Deploying
+
+The world lives at `eras.nathanarthur.com` and deliberately nowhere else:
+`workers_dev` is off. A request can only be turned away before it costs anything
+at the zone, and a live `workers.dev` URL would be a way around that.
+
+Workers Paid has no spending cap — the only hard stop Cloudflare sells is the
+free plan's. So the zone carries one rate limiting rule, which is all the free
+plan allows:
+
+| | |
+| --- | --- |
+| If | `http.request.uri.path in {"/snapshot" "/ws"}` |
+| Rate | 10 requests per 10 seconds, per IP |
+| Then | Block for 10 seconds |
+
+Generous for a person — a visit is one `/ws` request and the map arrives on the
+socket — and it caps what any single address can draw. It does nothing about a
+flood spread across many addresses; nothing on this plan does.
+
 The world runs off wall-clock time, so tuning rules means waiting years. Run it
 fast instead:
 
