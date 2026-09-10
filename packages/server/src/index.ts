@@ -3,6 +3,7 @@ import { generate, step, pack, unpack, type World } from "@eras/sim";
 
 const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
+const MAX_SPECTATORS = 100;   // each one is another ~704KiB down the wire per tick
 
 // One world-day per real minute. Override to run the world fast while tuning rules:
 //   wrangler dev --var TICK_MS:50
@@ -11,7 +12,14 @@ type Env = { WORLD: DurableObjectNamespace<WorldDO>; TICK_MS?: string };
 export class WorldDO extends DurableObject<Env> {
   private world?: World;
   private genesis = 0;
-  private get tickMs() { return Number(this.env.TICK_MS ?? 60_000); }
+  private get tickMs() {
+    // A zero or unparseable override would make world time infinite, leave the
+    // object permanently behind, and reschedule the alarm every 100ms forever.
+    // A tiny one does the same thing more slowly, so the floor is below the
+    // fastest rate worth tuning at and nowhere near zero.
+    const ms = Number(this.env.TICK_MS ?? 60_000);
+    return Number.isFinite(ms) && ms >= 10 ? ms : 60_000;
+  }
 
   // The world is ~704KiB and this class is SQLite-backed, where a value may be
   // 2MB. It goes under one key. Chunk it again if a later layer outgrows that.
@@ -74,6 +82,9 @@ export class WorldDO extends DurableObject<Env> {
     }
     if (req.headers.get("upgrade") !== "websocket") return new Response("not found", { status: 404 });
 
+    if (this.ctx.getWebSockets().length >= MAX_SPECTATORS) {
+      return new Response("the world is full", { status: 503 });
+    }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
     server.send(pack(world));
@@ -81,6 +92,16 @@ export class WorldDO extends DurableObject<Env> {
   }
 
   webSocketMessage() { /* spectators only, for now */ }
+
+  // Finish the handshake so the socket leaves getWebSockets() and its slot
+  // returns. Without this the cap could fill with ghosts and lock everyone out.
+  webSocketClose(ws: WebSocket, code: number, reason: string) {
+    try { ws.close(code, reason); } catch { /* already gone */ }
+  }
+
+  webSocketError(ws: WebSocket) {
+    try { ws.close(); } catch { /* already gone */ }
+  }
 }
 
 export default {
