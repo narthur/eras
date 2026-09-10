@@ -1,2 +1,10 @@
 packages:
   - packages/*
+
+# don't install a version the world has not had days to notice, don't let a
+# dependency come from somewhere exotic, and don't let one quietly downgrade
+# these settings. All three need a pnpm from late in the 10.x line, which is
+# why packageManager pins one.
+minimumReleaseAge: 4320
+blockExoticSubdeps: true
+trustPolicy: no-downgrade

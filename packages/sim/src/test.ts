@@ -1,8 +1,8 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, CELLS, SIZE } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, CELLS } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
-  const t = new Array(8).fill(0);
+  const t = Array.from({ length: 8 }, () => 0);
   for (let i = 0; i < CELLS; i++) t[biome(w, i)]++;
   return t;
 };
