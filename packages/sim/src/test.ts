@@ -21,8 +21,8 @@ for (let i = 0; i < TICKS; i++) step(b);
 assert.deepStrictEqual(new Uint8Array(pack(a)), new Uint8Array(pack(b)), "same seed must give the same world");
 
 const c = unpack(pack(a));
-assert.strictEqual(c.tick, a.tick);
-assert.deepStrictEqual(c.veg, a.veg);
+assert.deepStrictEqual(c, a, "every field must survive the round trip");
+assert.throws(() => unpack(pack(a).slice(0, 64)), /bytes/, "a short buffer must say so");
 
 const after = count(a);
 const mean = (w: ReturnType<typeof generate>) => w.veg.reduce((s, v) => s + v, 0) / CELLS;

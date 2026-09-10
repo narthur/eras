@@ -1,8 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { generate, step, pack, unpack, type World } from "@eras/sim";
 
-const BURST = 200;        // ticks per alarm, ~2s of CPU; catching up reschedules at once
-const CHUNK = 96 * 1024;  // under the per-key storage limit
+const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
 
 // One world-day per real minute. Override to run the world fast while tuning rules:
@@ -14,40 +13,27 @@ export class WorldDO extends DurableObject<Env> {
   private genesis = 0;
   private get tickMs() { return Number(this.env.TICK_MS ?? 60_000); }
 
+  // The world is ~705KiB and this class is SQLite-backed, where a value may be
+  // 2MB. It goes under one key. Chunk it again if a later layer outgrows that.
   private async load(): Promise<World> {
     if (this.world) return this.world;
-    const st = this.ctx.storage;
-    const meta = await st.get<{ genesis: number; chunks: number }>("meta");
-    if (!meta) {
+    const storage = this.ctx.storage;
+    const genesis = await storage.get<number>("genesis");
+    if (genesis === undefined) {
       this.genesis = Date.now();
       this.world = generate(SEED);
       await this.save();
-      await st.setAlarm(this.genesis + this.tickMs);
+      await storage.setAlarm(this.genesis + this.tickMs);
       return this.world;
     }
-    this.genesis = meta.genesis;
-    const parts = await st.get<ArrayBuffer>(
-      Array.from({ length: meta.chunks }, (_, i) => `w${i}`));
-    const buf = new Uint8Array(meta.chunks * CHUNK);
-    let n = 0;
-    for (let i = 0; i < meta.chunks; i++) {
-      const p = new Uint8Array(parts.get(`w${i}`)!);
-      buf.set(p, n);
-      n += p.length;
-    }
-    this.world = unpack(buf.buffer.slice(0, n));
+    this.genesis = genesis;
+    this.world = unpack((await storage.get<ArrayBuffer>("world"))!);
     return this.world;
   }
 
   private async save() {
-    const bytes = new Uint8Array(pack(this.world!));
-    const entries: Record<string, ArrayBuffer> = {};
-    let chunks = 0;
-    for (let o = 0; o < bytes.length; o += CHUNK) {
-      entries[`w${chunks++}`] = bytes.slice(o, o + CHUNK).buffer;
-    }
-    await this.ctx.storage.put(entries);
-    await this.ctx.storage.put("meta", { genesis: this.genesis, chunks });
+    await this.ctx.storage.put("world", pack(this.world!));
+    await this.ctx.storage.put("genesis", this.genesis);
   }
 
   async alarm() {
@@ -63,7 +49,7 @@ export class WorldDO extends DurableObject<Env> {
     if (!behind || run > 0) this.broadcast(pack(world));
   }
 
-  // ponytail: broadcasts the whole world (~590KB) once a minute. Send deltas
+  // ponytail: broadcasts the whole world (~705KiB) once a minute. Send deltas
   // when either the tick rate or the spectator count makes that hurt.
   private broadcast(buf: ArrayBuffer) {
     for (const ws of this.ctx.getWebSockets()) {
@@ -75,6 +61,8 @@ export class WorldDO extends DurableObject<Env> {
     const world = await this.load();
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 100);
 
+    // not used by the viewer, which lives on the socket. This is the one that
+    // answers `curl` when you want to know whether the world is still turning.
     if (new URL(req.url).pathname === "/snapshot") {
       return new Response(pack(world), { headers: { "content-type": "application/octet-stream" } });
     }

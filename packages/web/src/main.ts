@@ -39,7 +39,7 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
     return f > 60 ? mix([70, 120, 180], [190, 232, 255], clamp01(f / 3000)) : damp;
   },
   vegetation: (w, i) =>
-    w.elev[i] <= 0 ? rgb(20, 26, 36) : mix([62, 54, 42], [92, 200, 96], w.veg[i] / VEG_MAX),
+    w.elev[i] <= 0 ? rgb(20, 26, 36) : mix([62, 54, 42], [92, 200, 96], clamp01(w.veg[i] / VEG_MAX)),
 };
 
 let view = "biome";

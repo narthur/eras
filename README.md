@@ -9,8 +9,8 @@ ticked by a Durable Object alarm and pushed to spectators over a WebSocket.
 ## Packages
 
 | | |
-|---|---|
-| `packages/sim` | The world. Pure integer state machine: worldgen, tick, biome classification, wire format. No I/O. |
+| --- | --- |
+| `packages/sim` | The world. Deterministic state machine: worldgen, tick, biome classification, wire format. No I/O. |
 | `packages/server` | Worker + `WorldDO`, the always-running daemon. Owns the clock, storage and sockets. |
 | `packages/web` | Canvas viewer. Four colour functions over the same grid. |
 
@@ -20,6 +20,10 @@ pnpm dev        # worker on :8787, viewer on http://localhost:5173
 pnpm test       # sim self-check: determinism, erosion balance, growth
 pnpm deploy     # builds the viewer, wrangler deploy serves it alongside the DO
 ```
+
+A Durable Object only exists once something asks for it, and there is no cron
+trigger, so a freshly deployed world does not begin until the first visit. After
+that the alarm chain carries it on its own, watched or not.
 
 The world runs off wall-clock time, so tuning rules means waiting years. Run it
 fast instead:

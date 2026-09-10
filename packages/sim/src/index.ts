@@ -31,11 +31,12 @@ const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi 
 // ---- worldgen -------------------------------------------------------------
 // ponytail: floats here, but only + - * / which are exact per IEEE754, so this
 // is reproducible across engines. No Math.sin/pow/random anywhere. The tick
-// itself is pure integer maths.
+// divides too, but truncates to an integer after every one, so it lands in the
+// same place on every machine.
 
 const hash2 = (x: number, y: number, s: number) => {
-  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(s, 1274126177)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  const a = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(s, 1274126177)) | 0;
+  const h = Math.imul(a ^ (a >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
@@ -175,6 +176,7 @@ export function step(w: World): void {
     veg[i] = clamp(veg[i] + d, 0, VEG_MAX);
   }
   w.tick++;
+  w.ruleVersion = RULE_VERSION;   // stamp the rules that actually ran this tick
 }
 
 // ---- classification and wire format ---------------------------------------
@@ -215,6 +217,9 @@ export function pack(w: World): ArrayBuffer {
 export function unpack(buf: ArrayBuffer): World {
   const head = new DataView(buf);
   if (head.getUint32(0) !== 0x45524153) throw new Error("not a world");
+  if (buf.byteLength !== BYTES) {
+    throw new Error(`world is ${buf.byteLength} bytes, this build reads ${BYTES}`);
+  }
   let o = HEADER;
   const take = <T>(C: new (b: ArrayBuffer, o: number, n: number) => T, size: number): T => {
     const a = new C(buf, o, CELLS); o += CELLS * size; return a;
