@@ -44,6 +44,10 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
 
 let view = "biome";
 let world: World | undefined;
+let tickMs = 60_000;
+let due = 0;            // when the next world-day is expected, on this machine's clock
+let connected = false;
+let catchingUp = false; // days arriving in a rush, not on the wall clock
 
 const canvas = document.getElementById("map") as HTMLCanvasElement;
 canvas.width = canvas.height = SIZE;
@@ -52,12 +56,29 @@ const image = ctx.createImageData(SIZE, SIZE);
 const pixels = new Uint32Array(image.data.buffer);
 const clock = document.getElementById("clock")!;
 
+// The countdown runs on the viewer's own clock between frames, so watching the
+// world costs nothing beyond the tick it is waiting for. It owns this line
+// outright: a countdown that keeps counting while the socket is dead would be
+// claiming the world is turning when nobody can see whether it is.
+function paintClock() {
+  const left = Math.max(0, due - Date.now());
+  const status =
+    !connected ? (world ? "reconnecting…" : "connecting…")
+    : catchingUp ? "catching up"
+    : left > 0 ? `next in ${Math.ceil(left / 1000)}s`
+    : "any moment";
+  clock.textContent = world
+    ? `year ${(world.tick / 365 | 0) + 1}, day ${(world.tick % 365) + 1} · ${status}`
+    : status;
+}
+setInterval(paintClock, 250);
+
 function draw() {
   if (!world) return;
   const colour = VIEWS[view];
   for (let i = 0; i < CELLS; i++) pixels[i] = colour(world, i);
   ctx.putImageData(image, 0, 0);
-  clock.textContent = `year ${(world.tick / 365 | 0) + 1}, day ${(world.tick % 365) + 1}`;
+  paintClock();
 }
 
 const nav = document.getElementById("views")!;
@@ -77,7 +98,29 @@ for (const name of Object.keys(VIEWS)) {
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onmessage = (e) => { world = unpack(e.data as ArrayBuffer); draw(); };
-  ws.onclose = () => { clock.textContent = "reconnecting…"; setTimeout(connect, 3000); };
+  ws.onopen = () => { connected = true; };
+  ws.onmessage = (e) => {
+    if (typeof e.data === "string") {         // where we are in the current day
+      // Sent once per connection, so a throw here would strand this viewer on
+      // the default for as long as the socket lives. Keep the default instead.
+      try {
+        const m = JSON.parse(e.data) as { tickMs: number; nextIn: number };
+        tickMs = m.tickMs;
+        due = Date.now() + m.nextIn;
+      } catch {
+        console.warn("could not read the world clock", e.data);
+      }
+      paintClock();
+      return;
+    }
+    const next = unpack(e.data as ArrayBuffer);
+    // More than a day at once means the world is running down a backlog, and
+    // the one after it is due in moments rather than at the usual cadence.
+    catchingUp = !!world && next.tick - world.tick > 1;
+    world = next;
+    due = Date.now() + (catchingUp ? 100 : tickMs);
+    draw();
+  };
+  ws.onclose = () => { connected = false; paintClock(); setTimeout(connect, 3000); };
 }
 connect();

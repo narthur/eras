@@ -88,6 +88,14 @@ export class WorldDO extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
     server.send(pack(world));
+    // Where we are in the current day, so a viewer can count down to the next
+    // one without waiting for it. Sent after the world and only on connect:
+    // it lands last, so it wins, and it never costs a message per tick.
+    // A duration rather than a timestamp, because the viewer's clock is its own.
+    server.send(JSON.stringify({
+      tickMs: this.tickMs,
+      nextIn: Math.max(0, this.genesis + (world.tick + 1) * this.tickMs - Date.now()),
+    }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
