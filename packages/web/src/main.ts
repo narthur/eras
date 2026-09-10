@@ -68,15 +68,21 @@ for (const [name, value] of Object.entries(Biome)) BIOME_NAME[value] = name.toLo
 function paintCell() {
   if (!world || hover === undefined) { cell.hidden = true; return; }
   const i = hover;
+  // Soil holds the first soil/8 of the water against gravity; only what is
+  // above that stands on the surface. One number would have to mean both.
+  const held = world.soil[i] >> 3;
+  const standing = Math.max(0, world.water[i] - held);
   const rows: [string, string][] = [
     ["elev", `${Math.round(world.elev[i] / 10)}m`],
     ["soil", `${world.soil[i]}mm`],
-    ["water", `${world.water[i]}mm`],
+    ["damp", held > 0 ? `${Math.min(100, Math.round((world.water[i] * 100) / held))}%` : "—"],
+    ["standing", `${standing}mm`],
+    ["flow", `${world.flow[i]}mm`],
     ["veg", `${Math.round((world.veg[i] * 100) / VEG_MAX)}%`],
   ];
   cell.textContent = [
     BIOME_NAME[biome(world, i)],
-    ...rows.map(([k, v]) => k.padEnd(6) + v.padStart(8)),
+    ...rows.map(([k, v]) => k.padEnd(9) + v.padStart(8)),
   ].join("\n");
   cell.hidden = false;
 }

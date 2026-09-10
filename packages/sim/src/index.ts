@@ -3,7 +3,9 @@
 // Units, all integers so a tick is bit-for-bit reproducible:
 //   elev  decimetres of bedrock relative to sea level (Int16, negative = sea floor)
 //   soil  millimetres of loose material on top of bedrock
-//   water millimetres of standing water on top of that
+//   water millimetres of water in the cell. The first soil/8 of it is held in
+//         the soil against gravity and never runs off; only what is above that
+//         stands on the surface, flows downhill, drowns plants and cuts rivers
 //   veg   0..VEG_MAX vegetation density
 //   flow  millimetres of water that left the cell during the last tick
 //   rain  static per-cell rainfall weight from worldgen
