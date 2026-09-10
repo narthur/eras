@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eras</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column;
+         background: #14161a; color: #cfd4dc;
+         font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { display: flex; gap: 12px; align-items: baseline; padding: 8px 12px; }
+  nav { display: flex; gap: 4px; margin-left: auto; }
+  button { font: inherit; color: inherit; background: #22262e; border: 1px solid #333;
+           padding: 3px 9px; cursor: pointer; }
+  button[aria-pressed="true"] { background: #3d4450; color: #fff; }
+  main { flex: 1; min-height: 0; position: relative; }
+  canvas { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px);
+           object-fit: contain; image-rendering: pixelated; }
+</style>
+<header>
+  <strong>Eras</strong>
+  <span id="clock">connecting…</span>
+  <nav id="views"></nav>
+</header>
+<main><canvas id="map"></canvas></main>
+<script type="module" src="/src/main.ts"></script>

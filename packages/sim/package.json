@@ -1,0 +1,11 @@
+{
+  "name": "@eras/sim",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings src/test.ts"
+  },
+  "devDependencies": { "typescript": "^5.6.0" }
+}

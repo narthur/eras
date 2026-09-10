@@ -1,0 +1,16 @@
+{
+  "name": "eras",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --filter ./packages/server --filter ./packages/web dev",
+    "test": "pnpm --filter @eras/sim test",
+    "build": "pnpm --filter @eras/web build",
+    "deploy": "pnpm build && pnpm --filter @eras/server deploy",
+    "typecheck": "tsc -p packages/sim --noEmit && tsc -p packages/server --noEmit && tsc -p packages/web --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  },
+  "packageManager": "pnpm@10.6.1"
+}

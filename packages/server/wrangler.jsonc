@@ -1,0 +1,10 @@
+{
+  "name": "eras",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-01",
+  "assets": { "directory": "../web/dist" },
+  "durable_objects": {
+    "bindings": [{ "name": "WORLD", "class_name": "WorldDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorldDO"] }]
+}
