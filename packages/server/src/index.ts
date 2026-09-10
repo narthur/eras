@@ -13,8 +13,10 @@ export class WorldDO extends DurableObject<Env> {
   private genesis = 0;
   private get tickMs() { return Number(this.env.TICK_MS ?? 60_000); }
 
-  // The world is ~705KiB and this class is SQLite-backed, where a value may be
+  // The world is ~704KiB and this class is SQLite-backed, where a value may be
   // 2MB. It goes under one key. Chunk it again if a later layer outgrows that.
+  // No world has ever been stored under any other layout, so there is nothing
+  // to migrate from; a missing genesis means a missing world, not an old one.
   private async load(): Promise<World> {
     if (this.world) return this.world;
     const storage = this.ctx.storage;
@@ -26,14 +28,18 @@ export class WorldDO extends DurableObject<Env> {
       await storage.setAlarm(this.genesis + this.tickMs);
       return this.world;
     }
+    const stored = await storage.get<ArrayBuffer>("world");
+    if (!stored) throw new Error("the world has a genesis but no state");
+    // A world that cannot be read stops the object until someone looks. It is
+    // deliberately not regenerated: downtime is recoverable, the past is not.
     this.genesis = genesis;
-    this.world = unpack((await storage.get<ArrayBuffer>("world"))!);
+    this.world = unpack(stored);
     return this.world;
   }
 
   private async save() {
-    await this.ctx.storage.put("world", pack(this.world!));
-    await this.ctx.storage.put("genesis", this.genesis);
+    // one put, so the world and its genesis can never disagree
+    await this.ctx.storage.put({ world: pack(this.world!), genesis: this.genesis });
   }
 
   async alarm() {
@@ -49,7 +55,7 @@ export class WorldDO extends DurableObject<Env> {
     if (!behind || run > 0) this.broadcast(pack(world));
   }
 
-  // ponytail: broadcasts the whole world (~705KiB) once a minute. Send deltas
+  // ponytail: broadcasts the whole world (~704KiB) once a minute. Send deltas
   // when either the tick rate or the spectator count makes that hurt.
   private broadcast(buf: ArrayBuffer) {
     for (const ws of this.ctx.getWebSockets()) {
