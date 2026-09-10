@@ -1,5 +1,7 @@
 {
   "name": "eras",
+  // an identifier, not a credential: it saves CI from having to be told
+  "account_id": "adfd05cd78bce32cba06b1eff8b39618",
   "main": "src/index.ts",
   "compatibility_date": "2025-05-01",
   "assets": { "directory": "../web/dist" },
