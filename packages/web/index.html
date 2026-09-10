@@ -7,19 +7,24 @@
   body { margin: 0; height: 100vh; display: flex; flex-direction: column;
          background: #14161a; color: #cfd4dc;
          font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
-  header { display: flex; gap: 12px; align-items: baseline; padding: 8px 12px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; padding: 8px 12px; }
   nav { display: flex; gap: 4px; margin-left: auto; }
   button { font: inherit; color: inherit; background: #22262e; border: 1px solid #333;
            padding: 3px 9px; cursor: pointer; }
   button[aria-pressed="true"] { background: #3d4450; color: #fff; }
   main { flex: 1; min-height: 0; position: relative; }
+  /* Columns are padded to a fixed width, so a value changing length moves
+     nothing but itself. pointer-events: none keeps it out of its own way. */
+  #cell { position: absolute; top: 12px; left: 12px; margin: 0;
+          white-space: pre; color: #8b93a1; pointer-events: none;
+          background: #14161ac0; padding: 6px 8px; line-height: 1.5; }
   canvas { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px);
-           object-fit: contain; image-rendering: pixelated; }
+           object-fit: contain; image-rendering: pixelated; cursor: crosshair; }
 </style>
 <header>
   <strong>Eras</strong>
   <span id="clock">connecting…</span>
   <nav id="views"></nav>
 </header>
-<main><canvas id="map"></canvas></main>
+<main><canvas id="map"></canvas><pre id="cell" hidden></pre></main>
 <script type="module" src="/src/main.ts"></script>

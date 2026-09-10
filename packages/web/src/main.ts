@@ -47,6 +47,7 @@ let world: World | undefined;
 let tickMs = 60_000;
 let due = 0;            // when the next world-day is expected, on this machine's clock
 let connected = false;
+let hover: number | undefined;   // the cell under the cursor, if any
 let catchingUp = false; // days arriving in a rush, not on the wall clock
 
 const canvas = document.getElementById("map") as HTMLCanvasElement;
@@ -55,6 +56,55 @@ const ctx = canvas.getContext("2d")!;
 const image = ctx.createImageData(SIZE, SIZE);
 const pixels = new Uint32Array(image.data.buffer);
 const clock = document.getElementById("clock")!;
+const cell = document.getElementById("cell")!;
+
+// Indexed by each biome's own number rather than by the order the keys happen
+// to be written in, so inserting one in the middle renames nothing by accident.
+const BIOME_NAME: string[] = [];
+for (const [name, value] of Object.entries(Biome)) BIOME_NAME[value] = name.toLowerCase();
+
+// What is under the cursor. Repainted on every tick too, so a still cursor
+// over a river watches the river change rather than going stale.
+function paintCell() {
+  if (!world || hover === undefined) { cell.hidden = true; return; }
+  const i = hover;
+  const rows: [string, string][] = [
+    ["elev", `${Math.round(world.elev[i] / 10)}m`],
+    ["soil", `${world.soil[i]}mm`],
+    ["water", `${world.water[i]}mm`],
+    ["veg", `${Math.round((world.veg[i] * 100) / VEG_MAX)}%`],
+  ];
+  cell.textContent = [
+    BIOME_NAME[biome(world, i)],
+    ...rows.map(([k, v]) => k.padEnd(6) + v.padStart(8)),
+  ].join("\n");
+  cell.hidden = false;
+}
+
+// The canvas is letterboxed by object-fit, so the drawn map is centred inside
+// the element and smaller than it in one direction. Undo that before asking
+// which cell a pointer is over.
+function cellAt(e: MouseEvent): number | undefined {
+  const r = canvas.getBoundingClientRect();
+  const scale = Math.min(r.width / SIZE, r.height / SIZE);
+  // A canvas with no area yet divides by zero, and NaN would slip past the
+  // bounds check below and be read as a cell.
+  if (scale <= 0) return undefined;
+  const x = Math.floor((e.clientX - r.left - (r.width - SIZE * scale) / 2) / scale);
+  const y = Math.floor((e.clientY - r.top - (r.height - SIZE * scale) / 2) / scale);
+  return x < 0 || y < 0 || x >= SIZE || y >= SIZE ? undefined : y * SIZE + x;
+}
+
+// Only where there is a pointer that can hover. A touch device fires a
+// mousemove on tap but never a mouseleave, so the panel would latch open on
+// whatever was tapped and keep refreshing there with no way to dismiss it.
+// The readout holds a cell, not a position, so it points at the wrong cell
+// between a window resize and the next movement. It corrects itself on the
+// next mousemove, which is how every other hover on the web behaves.
+if (matchMedia("(hover: hover)").matches) {
+  canvas.addEventListener("mousemove", (e) => { hover = cellAt(e); paintCell(); });
+  canvas.addEventListener("mouseleave", () => { hover = undefined; paintCell(); });
+}
 
 // The countdown runs on the viewer's own clock between frames, so watching the
 // world costs nothing beyond the tick it is waiting for. It owns this line
@@ -79,6 +129,7 @@ function draw() {
   for (let i = 0; i < CELLS; i++) pixels[i] = colour(world, i);
   ctx.putImageData(image, 0, 0);
   paintClock();
+  paintCell();
 }
 
 const nav = document.getElementById("views")!;
