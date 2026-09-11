@@ -37,11 +37,11 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
   },
   water: (w, i) => {
     if (w.elev[i] <= 0) return rgb(20, 32, 54);
-    // moisture as the base, this tick's flow drawn over it
+    // moisture as the base, the drainage network drawn over it
     const damp = mix([44, 42, 38], [86, 108, 130],
       clamp01(w.water[i] / Math.max(1, w.soil[i] >> 3)));
     const f = w.flow[i];
-    return f > 60 ? mix([70, 120, 180], [190, 232, 255], clamp01(f / 3000)) : damp;
+    return f > 30 ? mix([70, 120, 180], [190, 232, 255], clamp01(f / 2000)) : damp;
   },
   vegetation: (w, i) =>
     w.elev[i] <= 0 ? rgb(20, 26, 36) : mix([62, 54, 42], [92, 200, 96], clamp01(w.veg[i] / VEG_MAX)),
@@ -136,7 +136,8 @@ function paintCell() {
     ["soil", `${world.soil[i]}mm`],
     ["damp", held > 0 ? `${Math.min(100, Math.round((world.water[i] * 100) / held))}%` : "—"],
     ["standing", `${standing}mm`],
-    ["flow", `${world.flow[i]}mm`],
+    // not a depth any more: everything upstream, weighted by its rainfall
+    ["drains", `${world.flow[i]}`],
     ["veg", `${Math.round((world.veg[i] * 100) / VEG_MAX)}%`],
   ];
   cell.textContent = [

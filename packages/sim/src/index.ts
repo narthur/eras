@@ -8,14 +8,15 @@
 //         stands on the surface, flows downhill, drowns plants and cuts rivers
 //   veg   0..VEG_MAX vegetation density. Grows toward what the cell's moisture
 //         and soil can carry, and burns back to nothing when dry canopy lights
-//   flow  millimetres of water that left the cell during the last tick
+//   flow  the drainage above the cell: everything upstream of it, weighted by
+//         each cell's rainfall. Redrawn when the land moves, not every day
 //   rain  static per-cell rainfall weight from worldgen
 // Surface height in millimetres is elev * 100 + soil + water.
 
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 2;
+export const RULE_VERSION = 3;
 
 export type World = {
   seed: number;
@@ -143,11 +144,108 @@ function burn(w: World, at: number) {
   }
 }
 
+// ---- drainage -------------------------------------------------------------
+// A river is not the water that happened to move today. That dies in the first
+// pit it meets, and there are ~260 pits on this continent — under 1% of the
+// land, but enough to chop it into ~260 basins, so nothing ever gathered more
+// than a few hundred cells and the longest reach was about thirty. A river is
+// where the land says water goes.
+//
+// Priority-flood raises every pit to the level of its own outlet, which leaves
+// a surface that drains to the sea from everywhere; the drainage above a cell
+// is then one pass down that surface. Both are recomputed every RIVER_EVERY
+// days rather than daily, because the network moves at the speed of erosion —
+// and because the answer rides in the packed world between times, so a world
+// that restarts mid-run redraws on the same day it would have anyway.
+
+const RIVER_EVERY = 64;
+const FAR = 0x7fffffff;
+const fill = new Int32Array(CELLS);   // the surface once every pit is full
+const to = new Int32Array(CELLS);     // the neighbour each cell drains into
+const drop = new Int32Array(CELLS);   // cells in the order the flood reached them
+const acc = new Int32Array(CELLS);    // rain gathered from everything upstream
+const heap = new Int32Array(CELLS);
+let heapN = 0;
+
+// Ties break on index, so the flood is the same flood on every machine.
+const above = (a: number, b: number) => (fill[a] !== fill[b] ? fill[a] > fill[b] : a > b);
+
+function heapPush(i: number) {
+  let c = heapN++;
+  heap[c] = i;
+  while (c > 0) {
+    const p = (c - 1) >> 1;
+    if (!above(heap[p], heap[c])) break;
+    const t = heap[p]; heap[p] = heap[c]; heap[c] = t;
+    c = p;
+  }
+}
+
+function heapPop(): number {
+  const top = heap[0];
+  heap[0] = heap[--heapN];
+  let p = 0;
+  for (;;) {
+    const l = p * 2 + 1, r = l + 1;
+    let m = p;
+    if (l < heapN && above(heap[m], heap[l])) m = l;
+    if (r < heapN && above(heap[m], heap[r])) m = r;
+    if (m === p) break;
+    const t = heap[p]; heap[p] = heap[m]; heap[m] = t;
+    p = m;
+  }
+  return top;
+}
+
+/** Redraws the drainage network into `flow`, in rain per cell per day. */
+function drain(w: World) {
+  const { elev, soil, rain, flow } = w;
+  flow.fill(0);
+  heapN = 0;
+  // The sea is the outlet and the only thing already at its final height.
+  for (let i = 0; i < CELLS; i++) {
+    if (elev[i] > 0) { fill[i] = FAR; continue; }
+    fill[i] = elev[i] * 100 + soil[i];
+    heapPush(i);
+  }
+  let n = 0;
+  while (heapN > 0) {
+    const i = heapPop();
+    drop[n++] = i;
+    for (const j of neighbours(i)) {
+      if (fill[j] !== FAR) continue;   // already spoken for: this is the mark
+      const base = elev[j] * 100 + soil[j];
+      // A millimetre above whatever let the water out, so that a filled pit is
+      // a slope rather than a plateau and the water on it knows which way to go
+      fill[j] = base > fill[i] ? base : fill[i] + 1;
+      heapPush(j);
+    }
+  }
+  // Downhill on the filled surface. The cell that let this one out is always
+  // strictly below it, so there is always somewhere to go and it reaches the sea.
+  for (let i = 0; i < CELLS; i++) {
+    let best = -1, low = fill[i];
+    for (const j of neighbours(i)) if (fill[j] < low) { low = fill[j]; best = j; }
+    to[i] = best;
+    acc[i] = elev[i] > 0 ? rain[i] : 0;
+  }
+  // Highest first, so everything upstream of a cell has already reported in.
+  for (let k = n - 1; k >= 0; k--) {
+    const i = drop[k];
+    if (to[i] >= 0) acc[to[i]] += acc[i];
+    flow[i] = Math.min(65535, acc[i] >> 6);
+  }
+}
+
 /** One world-day. Rain, flow, erosion, deposition, growth, fire. */
 export function step(w: World): void {
-  const { elev, soil, water, veg, flow, rain } = w;
-  flow.fill(0);
+  const { elev, soil, water, veg, rain } = w;
   fires.length = 0;
+  // Where the water goes, as against where today's water is. Rare, and pinned
+  // to the day rather than to how long this copy of the world has been awake.
+  // Also on the first tick under new rules, since a world that arrives carrying
+  // some older idea of what `flow` meant should not draw rivers from it.
+  if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) drain(w);
 
   // rain, then evaporation. Vegetation holds moisture back.
   for (let i = 0; i < CELLS; i++) {
@@ -180,7 +278,6 @@ export function step(w: World): void {
     if (t === 0) continue;
     water[i] -= t;
     water[lowest] = Math.min(65535, water[lowest] + t);
-    flow[i] = Math.min(65535, flow[i] + t);
 
     // sediment: carried in proportion to flow, resisted by roots
     const carry = Math.min(soil[i], ((t >> 5) * VEG_MAX) / (VEG_MAX + veg[i] * 3) | 0);
@@ -243,7 +340,7 @@ export const Biome = { Ocean: 0, Lake: 1, River: 2, Rock: 3, Barren: 4, Grass: 5
 export function biome(w: World, i: number): number {
   if (w.elev[i] <= 0) return Biome.Ocean;
   if (w.water[i] - (w.soil[i] >> 3) > 1200) return Biome.Lake;
-  if (w.flow[i] > 400) return Biome.River;
+  if (w.flow[i] > 200) return Biome.River;
   if (w.elev[i] > 1800) return Biome.Peak;
   if (w.veg[i] > 6000) return Biome.Forest;
   if (w.veg[i] > 1500) return Biome.Grass;
@@ -305,12 +402,6 @@ export type Feature = { kind: FeatureKind; size: number; x: number; y: number };
 // small: they fill and drain within a few years, and catching one before it
 // goes is the point rather than a defect.
 //
-// ponytail: rivers come out as the strongest reaches of a watercourse rather
-// than a whole drainage. Roughly 260 pits dot the continent, each ending a
-// basin, so flow accumulation over the raw surface never gathers more than a
-// few hundred cells. Fixing it properly means filling sinks first — a naive
-// iterative fill raises a pit 1mm a round and never converges; it wants
-// priority-flood. Worth doing when a river needs to be named end to end.
 export const FEATURE_MIN: Record<FeatureKind, number> =
   { island: 8, lake: 4, river: 10, forest: 300, range: 16 };
 

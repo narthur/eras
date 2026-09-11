@@ -62,6 +62,25 @@ const burnt = [...f.veg].filter((v, i) => f.elev[i] > 0 && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
 assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
 
+// Rivers have to be whole. Accumulating the water that actually moved on the
+// day gave fragments of about thirty cells, because every pit ended a basin;
+// the filled surface should carry one course from the interior to the coast.
+const river = features(a).filter((f) => f.kind === "river");
+assert.ok(river[0].size > 100, `a river should run, longest ${river[0]?.size}`);
+// and it should get to the sea: whatever carries the most drainage is a mouth
+let mouth = 0;
+for (let i = 0; i < CELLS; i++) if (a.elev[i] > 0 && a.flow[i] > a.flow[mouth]) mouth = i;
+const mx = mouth % SIZE, my = (mouth / SIZE) | 0;
+let coastal = false;
+for (let dy = -1; dy <= 1; dy++) {
+  for (let dx = -1; dx <= 1; dx++) {
+    const nx = mx + dx, ny = my + dy;
+    if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
+    if (a.elev[ny * SIZE + nx] <= 0) coastal = true;
+  }
+}
+assert.ok(coastal, `the greatest drainage should end at the sea, ends at ${mx},${my}`);
+
 const found = features(a);
 const islands = found.filter((f) => f.kind === "island");
 assert.ok(islands.length > 0, "the world should have land worth naming");
