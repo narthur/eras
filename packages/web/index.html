@@ -15,6 +15,9 @@
   main { flex: 1; min-height: 0; position: relative; }
   /* Columns are padded to a fixed width, so a value changing length moves
      nothing but itself. pointer-events: none keeps it out of its own way. */
+  #found { position: absolute; bottom: 12px; left: 12px; margin: 0;
+           white-space: pre; color: #8b93a1; pointer-events: none;
+           background: #14161ac0; padding: 6px 8px; line-height: 1.5; }
   #cell { position: absolute; top: 12px; left: 12px; margin: 0;
           white-space: pre; color: #8b93a1; pointer-events: none;
           background: #14161ac0; padding: 6px 8px; line-height: 1.5; }
@@ -26,5 +29,5 @@
   <span id="clock">connecting…</span>
   <nav id="views"></nav>
 </header>
-<main><canvas id="map"></canvas><pre id="cell" hidden></pre></main>
+<main><canvas id="map"></canvas><pre id="cell" hidden></pre><pre id="found" hidden></pre></main>
 <script type="module" src="/src/main.ts"></script>

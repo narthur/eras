@@ -238,3 +238,81 @@ export function unpack(buf: ArrayBuffer): World {
     rain: take(Uint8Array, 1),
   };
 }
+
+// ---- features ---------------------------------------------------------------
+// The things in the world big enough to be worth a name. A feature is just a
+// connected run of like cells; naming them is someone else's job.
+
+export type FeatureKind = "island" | "lake" | "river" | "forest" | "range";
+export type Feature = { kind: FeatureKind; size: number; x: number; y: number };
+
+// Below these sizes a thing is scenery, not a place. Lakes are deliberately
+// small: they fill and drain within a few years, and catching one before it
+// goes is the point rather than a defect.
+//
+// ponytail: rivers come out as the strongest reaches of a watercourse rather
+// than a whole drainage. Roughly 260 pits dot the continent, each ending a
+// basin, so flow accumulation over the raw surface never gathers more than a
+// few hundred cells. Fixing it properly means filling sinks first — a naive
+// iterative fill raises a pit 1mm a round and never converges; it wants
+// priority-flood. Worth doing when a river needs to be named end to end.
+export const FEATURE_MIN: Record<FeatureKind, number> =
+  { island: 8, lake: 4, river: 10, forest: 300, range: 16 };
+
+const seen = new Int32Array(CELLS);
+const queue = new Int32Array(CELLS);
+const kindAt = new Uint8Array(CELLS);
+let pass = 0;   // stamped into `seen`, so it never needs clearing
+
+export function features(w: World, min = FEATURE_MIN): Feature[] {
+  for (let i = 0; i < CELLS; i++) kindAt[i] = biome(w, i);
+  // Connectivity follows whatever made the thing. Water runs to any of the
+  // eight neighbours, so a river is a diagonal staircase and reads as a row of
+  // unrelated puddles if you only look up, down and sideways. Land is joined
+  // squarely: two shores touching at one corner are two islands.
+  const kinds: [FeatureKind, (i: number) => boolean, boolean][] = [
+    ["island", (i) => w.elev[i] > 0, false],
+    ["lake", (i) => kindAt[i] === Biome.Lake, false],
+    ["river", (i) => kindAt[i] === Biome.River, true],
+    ["forest", (i) => kindAt[i] === Biome.Forest, false],
+    ["range", (i) => kindAt[i] === Biome.Peak, false],
+  ];
+
+  const out: Feature[] = [];
+  for (const [kind, belongs, diagonal] of kinds) {
+    pass++;
+    for (let start = 0; start < CELLS; start++) {
+      if (seen[start] === pass || !belongs(start)) continue;
+      seen[start] = pass;
+      queue[0] = start;
+      let head = 0, tail = 1, size = 0, sx = 0, sy = 0;
+      while (head < tail) {
+        const i = queue[head++];
+        const x = i % SIZE, y = (i / SIZE) | 0;
+        size++; sx += x; sy += y;
+        const left = x > 0, right = x < SIZE - 1, up = y > 0, down = y < SIZE - 1;
+        if (left) tail = visit(i - 1, belongs, tail);
+        if (right) tail = visit(i + 1, belongs, tail);
+        if (up) tail = visit(i - SIZE, belongs, tail);
+        if (down) tail = visit(i + SIZE, belongs, tail);
+        if (diagonal) {
+          if (left && up) tail = visit(i - SIZE - 1, belongs, tail);
+          if (right && up) tail = visit(i - SIZE + 1, belongs, tail);
+          if (left && down) tail = visit(i + SIZE - 1, belongs, tail);
+          if (right && down) tail = visit(i + SIZE + 1, belongs, tail);
+        }
+      }
+      if (size >= min[kind]) {
+        out.push({ kind, size, x: Math.round(sx / size), y: Math.round(sy / size) });
+      }
+    }
+  }
+  return out.sort((a, b) => b.size - a.size || a.y - b.y || a.x - b.x);
+}
+
+function visit(i: number, belongs: (i: number) => boolean, tail: number): number {
+  if (seen[i] === pass || !belongs(i)) return tail;
+  seen[i] = pass;
+  queue[tail] = i;
+  return tail + 1;
+}

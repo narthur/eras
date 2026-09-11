@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import { generate, step, pack, unpack, type World } from "@eras/sim";
+import { features, generate, step, pack, unpack, type Feature, type World } from "@eras/sim";
 
 const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
 const MAX_SPECTATORS = 100;   // each one is another ~704KiB down the wire per tick
+const FEATURE_EVERY = 30;    // world-days between sweeps; a forest takes decades
 
 // One world-day per real minute. Override to run the world fast while tuning rules:
 //   wrangler dev --var TICK_MS:50
@@ -12,6 +13,8 @@ type Env = { WORLD: DurableObjectNamespace<WorldDO>; TICK_MS?: string };
 export class WorldDO extends DurableObject<Env> {
   private world?: World;
   private genesis = 0;
+  private found: Feature[] = [];
+  private foundAt = -FEATURE_EVERY;   // so the first sweep runs immediately
   private get tickMs() {
     // A zero or unparseable override would make world time infinite, leave the
     // object permanently behind, and reschedule the alarm every 100ms forever.
@@ -50,6 +53,17 @@ export class WorldDO extends DurableObject<Env> {
     await this.ctx.storage.put({ world: pack(this.world!), genesis: this.genesis });
   }
 
+  // What the world has made that is big enough to have a name. Swept on a
+  // schedule rather than every tick: nothing here changes in a day, and each
+  // sweep that finds nothing new still costs every spectator a message.
+  private sweep(world: World): boolean {
+    if (world.tick - this.foundAt < FEATURE_EVERY) return false;
+    this.foundAt = world.tick;
+    const before = JSON.stringify(this.found);
+    this.found = features(world);
+    return JSON.stringify(this.found) !== before;
+  }
+
   async alarm() {
     const world = await this.load();
     const target = Math.floor((Date.now() - this.genesis) / this.tickMs);
@@ -57,15 +71,19 @@ export class WorldDO extends DurableObject<Env> {
     for (let i = 0; i < run; i++) step(world);
     await this.save();
 
+    const changed = this.sweep(world);
     const behind = world.tick < target;
     await this.ctx.storage.setAlarm(
       behind ? Date.now() + 100 : this.genesis + (world.tick + 1) * this.tickMs);
-    if (!behind || run > 0) this.broadcast(pack(world));
+    if (!behind || run > 0) {
+      this.broadcast(pack(world));
+      if (changed) this.broadcast(JSON.stringify({ features: this.found }));
+    }
   }
 
   // ponytail: broadcasts the whole world (~704KiB) once a minute. Send deltas
   // when either the tick rate or the spectator count makes that hurt.
-  private broadcast(buf: ArrayBuffer) {
+  private broadcast(buf: ArrayBuffer | string) {
     for (const ws of this.ctx.getWebSockets()) {
       try { ws.send(buf); } catch { /* closing */ }
     }
@@ -85,6 +103,12 @@ export class WorldDO extends DurableObject<Env> {
     if (this.ctx.getWebSockets().length >= MAX_SPECTATORS) {
       return new Response("the world is full", { status: 503 });
     }
+    // Sweep before this socket joins, and tell the room if anything turned up.
+    // Whoever sweeps moves the window on for everybody, so an arrival that
+    // swept and stayed quiet would leave the people already here a full window
+    // behind on a world the object had already looked at.
+    if (this.sweep(world)) this.broadcast(JSON.stringify({ features: this.found }));
+
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
     server.send(pack(world));
@@ -95,6 +119,7 @@ export class WorldDO extends DurableObject<Env> {
     server.send(JSON.stringify({
       tickMs: this.tickMs,
       nextIn: Math.max(0, this.genesis + (world.tick + 1) * this.tickMs - Date.now()),
+      features: this.found,
     }));
     return new Response(null, { status: 101, webSocket: client });
   }

@@ -1,4 +1,4 @@
-import { unpack, biome, Biome, SIZE, CELLS, VEG_MAX, type World } from "@eras/sim";
+import { unpack, biome, Biome, SIZE, CELLS, VEG_MAX, type Feature, type World } from "@eras/sim";
 
 const rgb = (r: number, g: number, b: number) => 0xff000000 | (b << 16) | (g << 8) | r;
 const mix = (a: number[], b: number[], t: number) =>
@@ -48,6 +48,7 @@ let tickMs = 60_000;
 let due = 0;            // when the next world-day is expected, on this machine's clock
 let connected = false;
 let hover: number | undefined;   // the cell under the cursor, if any
+let found: Feature[] = [];       // what the world has made, none of it named yet
 let catchingUp = false; // days arriving in a rush, not on the wall clock
 
 const canvas = document.getElementById("map") as HTMLCanvasElement;
@@ -57,6 +58,24 @@ const image = ctx.createImageData(SIZE, SIZE);
 const pixels = new Uint32Array(image.data.buffer);
 const clock = document.getElementById("clock")!;
 const cell = document.getElementById("cell")!;
+const foundEl = document.getElementById("found")!;
+
+// Nothing is named yet, so the list is what the world is waiting to be asked
+// about. A few of each kind rather than simply the biggest: sorted by size
+// alone, one continent and eight mountain ranges bury every lake and river,
+// and the map would carry markers the list never mentions.
+function paintFound() {
+  const room: Record<string, number> = {};
+  // Sorted here rather than trusted to arrive sorted: "the four biggest of
+  // each kind" should not quietly become "the first four that showed up".
+  const shown = [...found]
+    .sort((a, b) => b.size - a.size)
+    .filter((f) => (room[f.kind] = (room[f.kind] ?? 0) + 1) <= 4);
+  foundEl.hidden = shown.length === 0;
+  foundEl.textContent = shown
+    .map((f) => `${f.kind.padEnd(7)}${String(f.size).padStart(6)}  ${f.x},${f.y}`)
+    .join("\n");
+}
 
 // Indexed by each biome's own number rather than by the order the keys happen
 // to be written in, so inserting one in the middle renames nothing by accident.
@@ -134,6 +153,16 @@ function draw() {
   const colour = VIEWS[view];
   for (let i = 0; i < CELLS; i++) pixels[i] = colour(world, i);
   ctx.putImageData(image, 0, 0);
+  // Passive markers: a ring the eye can find and ignore. No labels — at this
+  // scale a letter is four pixels and the panel does the naming of names.
+  ctx.strokeStyle = "#e8ecf29a";
+  ctx.lineWidth = 1;
+  for (const f of found) {
+    // Held clear of the border so a marker on a coastal feature draws as a
+    // ring rather than a clipped corner.
+    const mx = Math.min(Math.max(f.x, 2), SIZE - 3), my = Math.min(Math.max(f.y, 2), SIZE - 3);
+    ctx.strokeRect(mx - 1.5, my - 1.5, 4, 4);
+  }
   paintClock();
   paintCell();
 }
@@ -161,9 +190,11 @@ function connect() {
       // Sent once per connection, so a throw here would strand this viewer on
       // the default for as long as the socket lives. Keep the default instead.
       try {
-        const m = JSON.parse(e.data) as { tickMs: number; nextIn: number };
-        tickMs = m.tickMs;
-        due = Date.now() + m.nextIn;
+        const m = JSON.parse(e.data) as
+        Partial<{ tickMs: number; nextIn: number; features: Feature[] }>;
+        if (m.tickMs !== undefined) tickMs = m.tickMs;
+        if (m.nextIn !== undefined) due = Date.now() + m.nextIn;
+        if (m.features !== undefined) { found = m.features; paintFound(); draw(); }
       } catch {
         console.warn("could not read the world clock", e.data);
       }
