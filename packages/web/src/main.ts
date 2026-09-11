@@ -196,7 +196,18 @@ function mark(f: Feature, side: number) {
 function draw() {
   if (!world) return;
   const colour = VIEWS[view];
-  for (let i = 0; i < CELLS; i++) pixels[i] = colour(world, i);
+  // The page behind the map is painted the colour of the deepest water in the
+  // current view, so the letterboxing around a square map on a wide screen
+  // reads as more ocean rather than as a frame. Taken from the view's own
+  // colour function at the world's lowest cell: a second table of "the deep
+  // colour for each view" would be the same answer written twice.
+  let deep = 0;
+  for (let i = 0; i < CELLS; i++) {
+    pixels[i] = colour(world, i);
+    if (world.elev[i] < world.elev[deep]) deep = i;
+  }
+  const v = pixels[deep];   // 0xAABBGGRR, the byte order the canvas stores
+  document.body.style.background = `rgb(${v & 255} ${(v >> 8) & 255} ${(v >> 16) & 255})`;
   ctx.putImageData(image, 0, 0);
   // Passive markers: a ring the eye can find and ignore. No labels — at this
   // scale a letter is four pixels and the panel does the naming of names.
