@@ -49,6 +49,12 @@ let due = 0;            // when the next world-day is expected, on this machine'
 let connected = false;
 let hover: number | undefined;   // the cell under the cursor, if any
 let found: Feature[] = [];       // what the world has made, none of it named yet
+let lit: Feature | undefined;    // the row the cursor is on, shown on the map
+let shownText = "";              // what the panel last drew, to leave it alone
+
+// A tap fires mouseenter and never mouseleave, so anything that lights up on
+// hover would latch on with no way to put it out. Both the map and the list.
+const canHover = matchMedia("(hover: hover)").matches;
 let catchingUp = false; // days arriving in a rush, not on the wall clock
 
 const canvas = document.getElementById("map") as HTMLCanvasElement;
@@ -71,14 +77,36 @@ function paintFound() {
   const shown = [...found]
     .sort((a, b) => b.size - a.size)
     .filter((f) => (room[f.kind] = (room[f.kind] ?? 0) + 1) <= 4);
+  const text = shown.map((f) => `${f.kind} ${f.size} ${f.x},${f.y}`).join("|");
+  if (text === shownText) return;   // rebuilding would drop the row under the cursor
+  shownText = text;
   foundEl.hidden = shown.length === 0;
   // Headed, because a bare 27486 beside a bare 125,160 says nothing about
   // being an area and a place. Cells rather than any real measure: a cell has
   // a height in metres but no agreed width, so there is no honest km² to give.
-  foundEl.textContent = [
-    `${"unnamed".padEnd(8)}${"cells".padStart(6)}  ${"at"}`,
-    ...shown.map((f) => `${f.kind.padEnd(8)}${String(f.size).padStart(6)}  ${f.x},${f.y}`),
-  ].join("\n");
+  // The list changes whenever any river flickers, so losing the pointed-at
+  // feature on every sweep would make the highlight useless. Keep it if it is
+  // still there; the browser re-applies :hover to the new row on its own.
+  lit = lit && shown.find((f) => f.kind === lit!.kind && f.x === lit!.x && f.y === lit!.y);
+  foundEl.textContent = "";
+  foundEl.append(row(`${"unnamed".padEnd(8)}${"cells".padStart(6)}  at`));
+  for (const f of shown) {
+    // A coordinate pair is no way to find a place. Hovering the row says where
+    // it is in the only language the map speaks: pointing at it.
+    const el = row(`${f.kind.padEnd(8)}${String(f.size).padStart(6)}  ${f.x},${f.y}`);
+    if (canHover) {
+      el.dataset.at = `${f.x},${f.y}`;
+      el.onmouseenter = () => { lit = f; draw(); };
+      el.onmouseleave = () => { lit = undefined; draw(); };
+    }
+    foundEl.append(el);
+  }
+}
+
+function row(text: string): HTMLDivElement {
+  const el = document.createElement("div");
+  el.textContent = text;
+  return el;
 }
 
 // Indexed by each biome's own number rather than by the order the keys happen
@@ -130,7 +158,7 @@ function cellAt(e: MouseEvent): number | undefined {
 // The readout holds a cell, not a position, so it points at the wrong cell
 // between a window resize and the next movement. It corrects itself on the
 // next mousemove, which is how every other hover on the web behaves.
-if (matchMedia("(hover: hover)").matches) {
+if (canHover) {
   canvas.addEventListener("mousemove", (e) => { hover = cellAt(e); paintCell(); });
   canvas.addEventListener("mouseleave", () => { hover = undefined; paintCell(); });
 }
@@ -152,6 +180,16 @@ function paintClock() {
 }
 setInterval(paintClock, 250);
 
+// Held clear of the border by its own width, so a ring on a coastal feature
+// draws whole rather than as a clipped corner — and the wide rings that say
+// "this one" need more room than the small ones that merely say "something".
+function mark(f: Feature, side: number) {
+  const r = side / 2, edge = Math.ceil(r);
+  const mx = Math.min(Math.max(f.x, edge), SIZE - 1 - edge);
+  const my = Math.min(Math.max(f.y, edge), SIZE - 1 - edge);
+  ctx.strokeRect(mx + 0.5 - r, my + 0.5 - r, side, side);
+}
+
 function draw() {
   if (!world) return;
   const colour = VIEWS[view];
@@ -161,12 +199,8 @@ function draw() {
   // scale a letter is four pixels and the panel does the naming of names.
   ctx.strokeStyle = "#e8ecf29a";
   ctx.lineWidth = 1;
-  for (const f of found) {
-    // Held clear of the border so a marker on a coastal feature draws as a
-    // ring rather than a clipped corner.
-    const mx = Math.min(Math.max(f.x, 2), SIZE - 3), my = Math.min(Math.max(f.y, 2), SIZE - 3);
-    ctx.strokeRect(mx - 1.5, my - 1.5, 4, 4);
-  }
+  for (const f of found) mark(f, 4);
+  if (lit) { ctx.strokeStyle = "#ffffff"; mark(lit, 10); mark(lit, 16); }
   paintClock();
   paintCell();
 }
