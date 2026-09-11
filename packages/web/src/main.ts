@@ -26,9 +26,14 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
   elevation: (w, i) => {
     const e = w.elev[i];
     if (e <= 0) return mix([10, 20, 44], [58, 96, 148], clamp01(1 + e / 500));
+    // A measurement ramp, not a hypsometric tint. Green lowland rising to brown
+    // upland and white summits is what land cover looks like, so the eye reads
+    // it as forest, rock and snow no matter what the legend says. Violet
+    // through magenta to pale gold means nothing on Earth, which is the point:
+    // the only thing left to read is high and low.
     return e < 900
-      ? mix([64, 104, 62], [176, 150, 104], e / 900)
-      : mix([176, 150, 104], [246, 248, 252], clamp01((e - 900) / 1600));
+      ? mix([58, 24, 96], [196, 62, 106], e / 900)
+      : mix([196, 62, 106], [250, 226, 158], clamp01((e - 900) / 1600));
   },
   water: (w, i) => {
     if (w.elev[i] <= 0) return rgb(20, 32, 54);
