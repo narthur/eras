@@ -6,7 +6,8 @@
 //   water millimetres of water in the cell. The first soil/8 of it is held in
 //         the soil against gravity and never runs off; only what is above that
 //         stands on the surface, flows downhill, drowns plants and cuts rivers
-//   veg   0..VEG_MAX vegetation density
+//   veg   0..VEG_MAX vegetation density. Grows toward what the cell's moisture
+//         and soil can carry, and burns back to nothing when dry canopy lights
 //   flow  millimetres of water that left the cell during the last tick
 //   rain  static per-cell rainfall weight from worldgen
 // Surface height in millimetres is elev * 100 + soil + water.
@@ -14,7 +15,7 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 1;
+export const RULE_VERSION = 2;
 
 export type World = {
   seed: number;
@@ -112,10 +113,41 @@ function* neighbours(i: number) {
 const order = new Int32Array(CELLS);
 const height = new Int32Array(CELLS);
 
-/** One world-day. Rain, flow, erosion, deposition, growth. */
+// Fire is the only thing that happens to a world that has finished growing.
+// Without it the map is done the day the last cell matures; with it the land
+// keeps a patchwork of ages, because a burn grows back at its own cell's rate.
+const FIRE_ODDS = 0.0000005;   // per dry canopy cell per day, a few fires a year
+const BURN_CAP = 500;          // cells, so no one fire takes the continent
+const stack = new Int32Array(BURN_CAP);
+const fires: number[] = [];
+
+// Burns outward from the strike through anything dry enough to carry it.
+// Setting the cell to bare on the way in is what stops it burning twice.
+function burn(w: World, at: number) {
+  const { veg, water, soil } = w;
+  let top = 0, burnt = 1;
+  veg[at] = 0;
+  stack[top++] = at;
+  // Counted on the way in rather than on the way out: a cell popped off the
+  // stack frees the slot for another, so bounding the stack depth bounds only
+  // how wide the fire front is and lets the fire itself run to twice its cap.
+  while (top > 0) {
+    const i = stack[--top];
+    for (const j of neighbours(i)) {
+      if (burnt >= BURN_CAP || veg[j] < 2000) continue;
+      if (water[j] - (soil[j] >> 3) > 0) continue;   // a river or a lake stops it
+      veg[j] = 0;
+      stack[top++] = j;
+      burnt++;
+    }
+  }
+}
+
+/** One world-day. Rain, flow, erosion, deposition, growth, fire. */
 export function step(w: World): void {
   const { elev, soil, water, veg, flow, rain } = w;
   flow.fill(0);
+  fires.length = 0;
 
   // rain, then evaporation. Vegetation holds moisture back.
   for (let i = 0; i < CELLS; i++) {
@@ -167,16 +199,39 @@ export function step(w: World): void {
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
     }
-    // bedrock weathers into new soil, or the island would scour itself bare
-    if (soil[i] < 3000 && (w.tick & 15) === 0) soil[i]++;
-    const s = soil[i], excess = water[i] - (s >> 3);
+    // Bedrock weathers into new soil, or the island would scour itself bare.
+    // It stops below what flat ground starts with, so it replaces what erosion
+    // strips off the uplands rather than burying the whole world: soil holds
+    // back the first soil/8 of the rain, so deepening it everywhere slowly
+    // strangles the rivers — they fell by two thirds over forty years when
+    // this ran to 3000mm.
+    if (soil[i] < 1200 && (w.tick & 15) === 0) soil[i]++;
+    const s = soil[i], held = s >> 3, excess = water[i] - held;
+    // What this cell can carry. Rainfall is the permanent term: it varies two to
+    // one across the continent and never moves, so it is what makes forest
+    // country and grass country different places rather than different years.
+    // Soil gates the young world, which has not yet enough of it to root a
+    // forest. Drought bites only when the ground falls well below what it can
+    // hold — moisture alone was no use as the main term, because saturated soil
+    // reads 100% nearly everywhere for the first forty years and every cell
+    // then looks identical, which is how the whole continent used to cross from
+    // barren to grass to forest in one year each and never change again.
+    const damp = held > 0 ? ((water[i] * 100) / held) | 0 : 0;
+    const cap = Math.min(clamp((rain[i] - 85) * 110, 0, VEG_MAX), s * 6,
+                         damp >= 60 ? VEG_MAX : damp * 160);
     let d: number;
-    if (excess > 1200) d = -20;          // drowned
-    else if (s < 80) d = -5;             // bare rock
-    else if (water[i] * 16 < s) d = -3;  // parched: below half of what the soil can hold
-    else d = 1;                          // decades to a mature forest
+    if (excess > 1200) d = -20;              // drowned
+    else if (s < 80) d = -5;                 // bare rock
+    else if (veg[i] > cap) d = -3;           // more canopy than the ground keeps
+    else d = 1 + ((cap / 4000) | 0);         // good ground fills in faster
     veg[i] = clamp(veg[i] + d, 0, VEG_MAX);
+    // Dry canopy, long odds, drawn from the cell and the day so the same world
+    // burns in the same places. Collected rather than lit here: a fire that
+    // spread while the growth loop was still running would reach cells that
+    // had not grown yet today, and the rules would depend on the loop order.
+    if (veg[i] > 5000 && rain[i] < 150 && hash2(i, w.tick, w.seed) < FIRE_ODDS) fires.push(i);
   }
+  for (const i of fires) burn(w, i);
   w.tick++;
   w.ruleVersion = RULE_VERSION;   // stamp the rules that actually ran this tick
 }

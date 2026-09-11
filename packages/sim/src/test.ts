@@ -31,6 +31,37 @@ assert.ok(after[Biome.River] + after[Biome.Lake] > 20, "water should have collec
 assert.ok(a.soil.reduce((s, v) => s + v, 0) > 0.9 * generate(1234).soil.reduce((s, v) => s + v, 0), "the island must not scour itself bare");
 for (let i = 0; i < CELLS; i++) assert.ok(a.water[i] < 65535, "water must not saturate");
 
+// The growth rule has to make places, not days: before it took account of the
+// cell, every adequate cell grew at the same rate to the same ceiling and the
+// whole continent crossed from barren to grass to forest in a single year.
+// Measured against rainfall specifically, because terrain alone — bare rock,
+// drought, drowning — already spread the old flat rule enough to pass a plain
+// spread check, which made the check worthless as a guard against its return.
+const rains = [...a.rain].filter((_, i) => a.elev[i] > 0).sort((p, q) => p - q);
+const dry = rains[(rains.length / 4) | 0], wet = rains[((rains.length * 3) / 4) | 0];
+const meanVeg = (pick: (r: number) => boolean) => {
+  let sum = 0, n = 0;
+  for (let i = 0; i < CELLS; i++) if (a.elev[i] > 0 && pick(a.rain[i])) { sum += a.veg[i]; n++; }
+  return sum / n;
+};
+const [wetVeg, dryVeg] = [meanVeg((r) => r >= wet), meanVeg((r) => r <= dry)];
+assert.ok(wetVeg > dryVeg * 2,
+  `wet country should outgrow dry country: ${wetVeg.toFixed(0)} vs ${dryVeg.toFixed(0)}`);
+// And the rate itself has to vary, which the flat rule cannot fake: growing a
+// point a day for TICKS days cannot leave anything above TICKS.
+const tallest = [...a.veg].filter((_, i) => a.elev[i] > 0).reduce((m, v) => (v > m ? v : m), 0);
+assert.ok(tallest > TICKS, `good ground should grow faster than a point a day, tallest ${tallest}`);
+
+// Fire, on a world already grown over: rare enough that the ordinary run above
+// sees none, so this one starts mature. Deterministic, so it either burns for
+// this seed or it never will.
+const f = generate(1234);
+f.veg.fill(9500);
+for (let i = 0; i < TICKS; i++) step(f);
+const burnt = [...f.veg].filter((v, i) => f.elev[i] > 0 && v < 500).length;
+assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
+assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
+
 const found = features(a);
 const islands = found.filter((f) => f.kind === "island");
 assert.ok(islands.length > 0, "the world should have land worth naming");
