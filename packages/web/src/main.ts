@@ -72,9 +72,13 @@ function paintFound() {
     .sort((a, b) => b.size - a.size)
     .filter((f) => (room[f.kind] = (room[f.kind] ?? 0) + 1) <= 4);
   foundEl.hidden = shown.length === 0;
-  foundEl.textContent = shown
-    .map((f) => `${f.kind.padEnd(7)}${String(f.size).padStart(6)}  ${f.x},${f.y}`)
-    .join("\n");
+  // Headed, because a bare 27486 beside a bare 125,160 says nothing about
+  // being an area and a place. Cells rather than any real measure: a cell has
+  // a height in metres but no agreed width, so there is no honest km² to give.
+  foundEl.textContent = [
+    `${"unnamed".padEnd(8)}${"cells".padStart(6)}  ${"at"}`,
+    ...shown.map((f) => `${f.kind.padEnd(8)}${String(f.size).padStart(6)}  ${f.x},${f.y}`),
+  ].join("\n");
 }
 
 // Indexed by each biome's own number rather than by the order the keys happen
