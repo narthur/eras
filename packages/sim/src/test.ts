@@ -68,6 +68,30 @@ const grown = new Set<number>();
 for (let i = 0; i < CELLS; i++) if (!submerged(a, i) && a.veg[i] > 0) grown.add(a.veg[i]);
 assert.ok(grown.size > 8, `a year should leave the land uneven, ${grown.size} levels`);
 
+// Rain comes off the shape of the land, not out of a noise field: air that has
+// been climbing for the last few cells gives up more of what it carries, and
+// the ground beyond the ridge gets what is left. Measured against the six
+// cells upwind of each one, windward country should be wetter than lee country
+// by a clear margin; a rain map that owed nothing to the terrain would read 1.
+const height = (i: number) => a.elev[i] * 100 + a.soil[i];
+let wetSum = 0, wetN = 0, leeSum = 0, leeN = 0, rainSum = 0, landN = 0;
+for (let i = 0; i < CELLS; i++) {
+  if (submerged(a, i)) continue;
+  rainSum += a.rain[i];
+  landN++;
+  if (i % SIZE < 6 || submerged(a, i - 6)) continue;
+  const climb = height(i) - height(i - 6);
+  if (climb > 2000) { wetSum += a.rain[i]; wetN++; }
+  else if (climb < -2000) { leeSum += a.rain[i]; leeN++; }
+}
+const [windward, lee] = [wetSum / wetN, leeSum / leeN];
+assert.ok(windward > lee * 1.25,
+  `the lee of a range should be drier: ${windward.toFixed(0)} against ${lee.toFixed(0)}`);
+// and the wind only moves the rain about — the land's mean has to stay where
+// the growth rules were tuned for it, however the terrain moves underneath
+const meanRain = rainSum / landN;
+assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain.toFixed(0)}`);
+
 // Fire, on a world already grown over: rare enough that the ordinary run above
 // sees none, so this one starts mature. Deterministic, so it either burns for
 // this seed or it never will.

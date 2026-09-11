@@ -10,14 +10,15 @@
 //         and soil can carry, and burns back to nothing when dry canopy lights
 //   flow  the drainage above the cell: everything upstream of it, weighted by
 //         each cell's rainfall. Redrawn when the land moves, not every day
-//   rain  per-cell rainfall weight from worldgen, fixed. What actually falls
-//         is this scaled by the weather of the day, which drifts by decade
+//   rain  per-cell rainfall weight: what the wind drops here, given the shape
+//         of the land. What actually falls is this scaled by the weather of
+//         the day, which drifts by the decade
 // Surface height in millimetres is elev * 100 + soil + water.
 
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 6;
+export const RULE_VERSION = 7;
 
 export type World = {
   seed: number;
@@ -94,7 +95,6 @@ export function generate(seed: number): World {
       const edge = Math.min(x, y, SIZE - 1 - x, SIZE - 1 - y) / 34;
       const fall = edge >= 1 ? 0 : (1 - edge) * (1 - edge) * 2.2;
       elev[i] = clamp(Math.round((base + ridged - fall) * 2400), -500, 3000);
-      rain[i] = clamp(Math.round(fbm(x / 70, y / 70, seed + 4441, 3) * 200 + 40), 20, 255);
     }
   }
   // weathering: flat ground keeps soil, steep ground sheds it
@@ -105,7 +105,12 @@ export function generate(seed: number): World {
     // the same question submerged() asks: the clamp makes the two agree here
     if (elev[i] <= 0) water[i] = Math.max(0, -(elev[i] * 100 + soil[i]));
   }
-  return { seed, tick: 0, ruleVersion: RULE_VERSION, elev, soil, water, veg, flow, rain };
+  const world = { seed, tick: 0, ruleVersion: RULE_VERSION, elev, soil, water, veg, flow, rain };
+  // Rainfall is the wind's answer to the shape of the land, so it is asked here
+  // too rather than left empty until the first tick. There used to be a noise
+  // field in its place, which nothing has read since the wind arrived.
+  winds(world);
+  return world;
 }
 
 // ---- tick -----------------------------------------------------------------
@@ -252,6 +257,115 @@ function heapPop(): number {
   return top;
 }
 
+// ---- weather in the map ---------------------------------------------------
+// Where the rain falls, as against how much of it falls this decade. It used
+// to be a noise field laid over the terrain with no reference to it, so the dry
+// hearts of the continent were dry for no reason a reader could see. Now the
+// land makes its own rainfall: air comes off the sea carrying water, gives some
+// up wherever it is forced to climb, and arrives on the far side of a range
+// with little left. The desert is downwind of the mountains, and when a range
+// wears down over centuries the shadow behind it fades with it.
+//
+// Wind from the north-west, resolved into its two components: one sweep west to
+// east, one north to south, averaged. A single direction leaves the map in
+// stripes, since each line of cells would be independent of the ones beside it.
+const SEA_GAIN = 30;    // water picked up crossing a cell of open sea
+const LAND_GAIN = 10;    // and off the land itself, which is what keeps an
+                        // interior from being a desert by distance alone
+const HOLD = 1200;      // the most the air will carry
+const FALL = 6;         // thousandths of the load that falls on level ground
+const LIFT = 4;        // and per metre of climb
+const SOAK = 40;       // the most one cell can wring out of the air
+const LOOK = 6;        // cells of upwind ground the climb is measured over
+const BASE = 60;        // rain that arrives on weather fronts, wherever you are
+const CROWN = 25;       // tenths: the most one cell may take of the mean, clipped
+const TARGET = 135;     // mean rainfall over land, to hold the world's tuning
+const wet = new Int32Array(CELLS);
+const blur = new Int32Array(CELLS);
+
+function winds(w: World) {
+  const { elev, soil, rain } = w;
+  const surface = (i: number) => elev[i] * 100 + soil[i];
+  wet.fill(0);
+  // `step` is the stride into the wind: one cell along the row, then one row.
+  for (const stride of [1, SIZE]) {
+    for (let line = 0; line < SIZE; line++) {
+      let held = 0;
+      const first = stride === 1 ? line * SIZE : line;
+      for (let k = 0; k < SIZE; k++) {
+        const i = first + k * stride;
+        if (submerged(w, i)) {
+          held = Math.min(HOLD, held + SEA_GAIN);
+          continue;
+        }
+        held = Math.min(HOLD, held + LAND_GAIN);
+        // How steeply the ground has been rising for the last few cells, in
+        // metres per cell. Measured against the cell immediately upwind it
+        // answers for every bump in the noise, and the rain map comes out a
+        // relief drawing — bright on each north-west face — rather than a
+        // climate, which belongs to whole ranges and not to single cells.
+        const back = k < LOOK ? k : LOOK;
+        const up = back === 0 ? 0
+          : Math.max(0, surface(i) - surface(i - back * stride)) / (1000 * back) | 0;
+        let part = FALL + up * LIFT;
+        if (part > SOAK) part = SOAK;
+        const fell = ((held * part) / 1000) | 0;
+        held -= fell;
+        wet[i] += fell;
+      }
+    }
+  }
+  // Scaled so the land's mean rainfall stays where the growth rules were tuned
+  // for it: the wind moves rain about, it does not make more of it. Twice,
+  // because the first scale is computed before the floor and the ceiling have
+  // had their say and they move the mean it was aiming for.
+  // Rain drifts. Averaging each cell with its neighbours is the cheapest
+  // honest way to say so, and it keeps the map from carrying the grain of the
+  // terrain it came from.
+  blur.set(wet);
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      const i = y * SIZE + x;
+      let sum = blur[i], n = 1;
+      for (const j of neighbours(i)) { sum += blur[j]; n++; }
+      wet[i] = (sum / n) | 0;
+    }
+  }
+  let land = 0, raw = 0;
+  for (let i = 0; i < CELLS; i++) if (!submerged(w, i)) { land++; raw += wet[i]; }
+  if (land === 0) return;
+  // The windward face of a coastal range takes an absurd share of the sweep —
+  // the air arrives full and gives up a fifth of it in one cell — so the top is
+  // clipped at two and a half times the mean. Rainfall saturates; a place can
+  // only be so wet, and without this a tenth of the land pins at the ceiling
+  // while a quarter of it sits on the floor.
+  const roof = ((raw / land) * CROWN) / 10 | 0;
+  for (let i = 0; i < CELLS; i++) if (wet[i] > roof) wet[i] = roof;
+  // Then a base that owes nothing to the terrain, because rain also arrives on
+  // fronts, and a scale on the rest so the land's mean stays where the growth
+  // rules were tuned for it: the wind moves rain about, it does not make more
+  // of it. Twice round, because the floor and the ceiling move the mean that
+  // the first scale was aiming at.
+  let scale = 1000;
+  for (let pass = 0; pass < 2; pass++) {
+    let sum = 0;
+    for (let i = 0; i < CELLS; i++) {
+      if (submerged(w, i)) continue;
+      sum += clamp(BASE + (((wet[i] * scale) / 1000) | 0), 20, 255);
+    }
+    const want = (TARGET - BASE) * land;
+    const got = Math.max(1, sum - BASE * land);
+    // Bounded because it is a ratio of sums: on a map where almost nothing
+    // falls — a single land cell, or land only in the row the sweep starts on —
+    // `got` collapses to 1 and this climbs into the millions, and a large
+    // enough product comes back through `| 0` as a negative number.
+    scale = clamp(((scale * want) / got) | 0, 1, 1_000_000);
+  }
+  for (let i = 0; i < CELLS; i++) {
+    rain[i] = clamp(BASE + (((wet[i] * scale) / 1000) | 0), 20, 255);
+  }
+}
+
 // Soil moves downhill without waiting for rain. Frost lifts it, roots prise it,
 // animals kick it, and gravity takes the rest: on any slope the loose material
 // creeps, faster the steeper it is. This is the other half of a valley — the
@@ -317,6 +431,7 @@ function crawl(w: World) {
 function drain(w: World) {
   const { elev, soil, rain, flow } = w;
   const wet = weather(w.tick, w.seed);
+  winds(w);        // where the rain falls, given the shape of the land today
   crawl(w);        // before the flood, so it fills the surface creep just made
   flow.fill(0);
   load.fill(0);   // nothing is in transit between passes, so a restart is clean
