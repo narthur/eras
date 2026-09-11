@@ -10,13 +10,14 @@
 //         and soil can carry, and burns back to nothing when dry canopy lights
 //   flow  the drainage above the cell: everything upstream of it, weighted by
 //         each cell's rainfall. Redrawn when the land moves, not every day
-//   rain  static per-cell rainfall weight from worldgen
+//   rain  per-cell rainfall weight from worldgen, fixed. What actually falls
+//         is this scaled by the weather of the day, which drifts by decade
 // Surface height in millimetres is elev * 100 + soil + water.
 
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 4;
+export const RULE_VERSION = 5;
 
 export type World = {
   seed: number;
@@ -101,6 +102,7 @@ export function generate(seed: number): World {
     let slope = 0;
     for (const j of neighbours(i)) slope = Math.max(slope, Math.abs(elev[i] - elev[j]));
     soil[i] = clamp(1400 - slope * 5, 0, 1400);
+    // the same question submerged() asks: the clamp makes the two agree here
     if (elev[i] <= 0) water[i] = Math.max(0, -(elev[i] * 100 + soil[i]));
   }
   return { seed, tick: 0, ruleVersion: RULE_VERSION, elev, soil, water, veg, flow, rain };
@@ -131,8 +133,10 @@ const BURN_CAP = 500;          // cells, so no one fire takes the continent
 const front = new Int32Array(BURN_CAP * 8);   // the edge of the fire
 const fires: number[] = [];
 
-// Burns outward from the strike through anything dry enough to carry it.
-// Setting the cell to bare on the way in is what stops it burning twice.
+// Burns outward from the strike through anything dry enough to carry it. A
+// cell goes bare when it catches rather than when it joins the queue, so the
+// duplicate entries the front collects find no fuel left and quietly do
+// nothing, which is what keeps a cell from burning twice.
 function burn(w: World, at: number) {
   const { veg, water, soil } = w;
   let n = 0, burnt = 0;
@@ -154,6 +158,45 @@ function burn(w: World, at: number) {
       if (veg[j] >= 2000 && n < front.length) front[n++] = j;
     }
   }
+}
+
+// ---- weather --------------------------------------------------------------
+// Every day in this world was the same day. A fixed rain map makes forest
+// country and grass country, which is geography; what it cannot make is
+// history, because a world whose weather never changes reaches a state and
+// then keeps it. The map is now multiplied by a number that drifts — one long
+// swing over about forty years and a shorter one over about seven, so wet
+// decades and dry ones arrive, and not on a schedule anyone could set a clock
+// by. Noise over time rather than a wave, for the same reason the terrain is
+// noise and not a grid.
+const WET_LOW = 80, WET_HIGH = 145;    // percent of what the map says
+
+/**
+ * What a cell can carry: the smallest of the rain that falls on it, the soil
+ * it has to root in, and how wet that soil is. Out here in the open rather
+ * than inline in the tick, because it is the rule that makes forest country
+ * and grass country and the only honest way to ask whether it still does is
+ * to ask it, not to run a century of weather past it and read the tea leaves.
+ */
+export function carry(falls: number, soil: number, damp: number): number {
+  return Math.min(clamp((falls - 85) * 110, 0, VEG_MAX), soil * 6,
+                  damp >= 60 ? VEG_MAX : damp * 160);
+}
+
+/** How fast a cell that can carry this much fills in, in a day. */
+export const fills = (cap: number) => 1 + ((cap / 4000) | 0);
+
+/** How wet this particular day is, as a percentage of the world's rainfall. */
+export function weather(tick: number, seed: number): number {
+  const slow = vnoise(tick / 4380, 0.5, seed + 8191);   // a dozen years
+  const fast = vnoise(tick / 1095, 1.5, seed + 6733);   // about three
+  // Stretched away from the middle and clipped at the ends. Two noise values
+  // averaged sit near the middle almost always, which gave a century whose
+  // wettest year and driest year were twenty percent apart — weather nobody
+  // would notice. Clipping is not a defect either: it is what a drought is,
+  // several years pinned at the bottom rather than passing through it.
+  const t = clamp((slow * 0.75 + fast * 0.25 - 0.5) * 1.9 + 0.5, 0, 1);
+  return (WET_LOW + (WET_HIGH - WET_LOW) * t) | 0;
 }
 
 // ---- drainage -------------------------------------------------------------
@@ -212,7 +255,9 @@ function heapPop(): number {
 /** Redraws the drainage network into `flow`, in rain per cell per day. */
 function drain(w: World) {
   const { elev, soil, rain, flow } = w;
+  const wet = weather(w.tick, w.seed);
   flow.fill(0);
+  load.fill(0);   // nothing is in transit between passes, so a restart is clean
   heapN = 0;
   // The sea is the outlet and the only thing already at its final height.
   for (let i = 0; i < CELLS; i++) {
@@ -239,7 +284,9 @@ function drain(w: World) {
     let best = -1, low = fill[i];
     for (const j of neighbours(i)) if (fill[j] < low) { low = fill[j]; best = j; }
     to[i] = best;
-    acc[i] = submerged(w, i) ? 0 : rain[i];
+    // What is falling now, not what the map says: a river is thinner in a dry
+    // decade. The pattern is the land's and does not move; only the size does.
+    acc[i] = submerged(w, i) ? 0 : ((rain[i] * wet) / 100) | 0;
   }
   // Highest first, so everything upstream of a cell has already reported in —
   // its drainage, and the sediment it is carrying.
@@ -267,6 +314,9 @@ function carve(w: World, i: number) {
   // The sea is where everything lands: no slope, no capacity, and the river
   // has arrived. Whatever it was still carrying builds up at the mouth.
   if (j < 0 || submerged(w, i)) {
+    // A cell still under the sea holds at most fifty metres of water above it,
+    // so there is always room in the soil for what one pass can bring; the
+    // clamp is a floor under an arithmetic accident, not a real case.
     soil[i] = Math.min(65535, soil[i] + load[i]);
     load[i] = 0;
     return;
@@ -284,9 +334,13 @@ function carve(w: World, i: number) {
   // carves a diagonal scar across the country that no river would.
   const bed = fill[i] === elev[i] * 100 + soil[i];
   if (load[i] > room || !bed) {
+    // Only what the ground can take. A basin floor that has filled to the top
+    // of what a cell can hold does not make the rest of the load disappear —
+    // it carries on downstream, the way it would over a bar it has built.
     const settle = bed ? load[i] - room : load[i];   // slack water puts it down
-    soil[i] = Math.min(65535, soil[i] + settle);
-    load[i] -= settle;
+    const held = Math.min(settle, 65535 - soil[i]);
+    soil[i] += held;
+    load[i] -= held;
   } else {
     // Roots hold the ground the same way they hold the moisture.
     let want = ((room - load[i]) * VEG_MAX) / (VEG_MAX + veg[i] * 3) | 0;
@@ -316,9 +370,10 @@ export function step(w: World): void {
   if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) drain(w);
 
   // rain, then evaporation. Vegetation holds moisture back.
+  const wet = weather(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
     if (elev[i] * 100 + soil[i] > 0) {
-      water[i] = Math.min(65535, water[i] + (rain[i] >> 3));
+      water[i] = Math.min(65535, water[i] + ((((rain[i] * wet) / 100) | 0) >> 3));
       const loss = (water[i] * (120 - ((veg[i] * 60) / VEG_MAX | 0))) / 1000 | 0;
       water[i] = Math.max(0, water[i] - loss);
     }
@@ -382,19 +437,21 @@ export function step(w: World): void {
     // then looks identical, which is how the whole continent used to cross from
     // barren to grass to forest in one year each and never change again.
     const damp = root > 0 ? ((water[i] * 100) / root) | 0 : 0;
-    const cap = Math.min(clamp((rain[i] - 85) * 110, 0, VEG_MAX), s * 6,
-                         damp >= 60 ? VEG_MAX : damp * 160);
+    // Against the rain of the day rather than the map, so that what the land
+    // can carry rises and falls with the decades and the margins move.
+    const falls = ((rain[i] * wet) / 100) | 0;
+    const cap = carry(falls, s, damp);
     let d: number;
     if (excess > 1200) d = -20;              // drowned
     else if (s < 80) d = -5;                 // bare rock
     else if (veg[i] > cap) d = -3;           // more canopy than the ground keeps
-    else d = 1 + ((cap / 4000) | 0);         // good ground fills in faster
+    else d = fills(cap);                     // good ground fills in faster
     veg[i] = clamp(veg[i] + d, 0, VEG_MAX);
     // Dry canopy, long odds, drawn from the cell and the day so the same world
     // burns in the same places. Collected rather than lit here: a fire that
     // spread while the growth loop was still running would reach cells that
     // had not grown yet today, and the rules would depend on the loop order.
-    if (veg[i] > 5000 && rain[i] < 150 && hash2(i, w.tick, w.seed) < FIRE_ODDS) fires.push(i);
+    if (veg[i] > 5000 && falls < 150 && hash2(i, w.tick, w.seed) < FIRE_ODDS) fires.push(i);
   }
   for (const i of fires) burn(w, i);
   w.tick++;

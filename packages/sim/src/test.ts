@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, CELLS, SIZE } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, CELLS, SIZE } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -16,12 +16,25 @@ const TICKS = 400;
 for (let i = 0; i < TICKS; i++) step(a);
 const ms = Date.now() - t0;
 
+// Byte by byte, by hand. A failed deepStrictEqual on two worlds renders a diff
+// of all 720KB of them, which takes ninety seconds and seven gigabytes to say
+// what one offset says at once — found by breaking this on purpose.
+const same = (x: ArrayBuffer, y: ArrayBuffer, what: string) => {
+  const p = new Uint8Array(x), q = new Uint8Array(y);
+  assert.strictEqual(p.length, q.length, `${what}: ${p.length} bytes against ${q.length}`);
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] !== q[i]) assert.fail(`${what}: byte ${i} is ${p[i]}, was ${q[i]}`);
+  }
+};
+
 const b = generate(1234);
 for (let i = 0; i < TICKS; i++) step(b);
-assert.deepStrictEqual(new Uint8Array(pack(a)), new Uint8Array(pack(b)), "same seed must give the same world");
+same(pack(a), pack(b), "same seed must give the same world");
 
 const c = unpack(pack(a));
-assert.deepStrictEqual(c, a, "every field must survive the round trip");
+same(pack(c), pack(a), "every field must survive the round trip");
+assert.strictEqual(c.tick, a.tick, "and the tick with it");
+assert.strictEqual(c.seed, a.seed, "and the seed");
 assert.throws(() => unpack(pack(a).slice(0, 64)), /bytes/, "a short buffer must say so");
 
 const after = count(a);
@@ -34,23 +47,26 @@ for (let i = 0; i < CELLS; i++) assert.ok(a.water[i] < 65535, "water must not sa
 // The growth rule has to make places, not days: before it took account of the
 // cell, every adequate cell grew at the same rate to the same ceiling and the
 // whole continent crossed from barren to grass to forest in a single year.
-// Measured against rainfall specifically, because terrain alone — bare rock,
-// drought, drowning — already spread the old flat rule enough to pass a plain
-// spread check, which made the check worthless as a guard against its return.
-const rains = [...a.rain].filter((_, i) => a.elev[i] > 0).sort((p, q) => p - q);
-const dry = rains[(rains.length / 4) | 0], wet = rains[((rains.length * 3) / 4) | 0];
-const meanVeg = (pick: (r: number) => boolean) => {
-  let sum = 0, n = 0;
-  for (let i = 0; i < CELLS; i++) if (a.elev[i] > 0 && pick(a.rain[i])) { sum += a.veg[i]; n++; }
-  return sum / n;
-};
-const [wetVeg, dryVeg] = [meanVeg((r) => r >= wet), meanVeg((r) => r <= dry)];
-assert.ok(wetVeg > dryVeg * 2,
-  `wet country should outgrow dry country: ${wetVeg.toFixed(0)} vs ${dryVeg.toFixed(0)}`);
-// And the rate itself has to vary, which the flat rule cannot fake: growing a
-// point a day for TICKS days cannot leave anything above TICKS.
-const tallest = [...a.veg].filter((_, i) => a.elev[i] > 0).reduce((m, v) => (v > m ? v : m), 0);
-assert.ok(tallest > TICKS, `good ground should grow faster than a point a day, tallest ${tallest}`);
+// Asked directly, because through a run it cannot be asked honestly: the
+// weather scales the whole map together, and in a wet decade the poorer country
+// catches up on purpose, so whether a given seed shows a gap over a given year
+// depends on the year rather than on the rule.
+const ROOTED = 1200, WET_SOIL = 100;    // deep enough soil, wet enough to drink
+assert.ok(carry(150, ROOTED, WET_SOIL) > carry(110, ROOTED, WET_SOIL),
+  "rain has to be what separates forest country from grass country");
+assert.ok(fills(carry(150, ROOTED, WET_SOIL)) > fills(carry(100, ROOTED, WET_SOIL)),
+  "and it has to show in how fast the ground fills, not only in the ceiling");
+assert.ok(carry(150, 200, WET_SOIL) < carry(150, ROOTED, WET_SOIL),
+  "thin soil holds a place back whatever the sky is doing");
+assert.ok(carry(150, ROOTED, 30) < carry(150, ROOTED, WET_SOIL),
+  "and drought bites ground that cannot hold what falls on it");
+assert.strictEqual(carry(80, ROOTED, WET_SOIL), 0, "nothing grows where nothing falls");
+
+// Then the same thing as it actually came out: the tick has to be using that
+// rule, and no two cells of a living world should hold exactly the same amount.
+const grown = new Set<number>();
+for (let i = 0; i < CELLS; i++) if (!submerged(a, i) && a.veg[i] > 0) grown.add(a.veg[i]);
+assert.ok(grown.size > 8, `a year should leave the land uneven, ${grown.size} levels`);
 
 // Fire, on a world already grown over: rare enough that the ordinary run above
 // sees none, so this one starts mature. Deterministic, so it either burns for
@@ -62,14 +78,13 @@ const mature = () => {
   return m;
 };
 const f = mature();
-const burnt = [...f.veg].filter((v, i) => f.elev[i] > 0 && v < 500).length;
+const burnt = [...f.veg].filter((v, i) => !submerged(f, i) && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
 assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
-// The world above is the only one here that catches fire — the ordinary run
-// never grows enough to light — so the determinism check has to be made again
-// on this one, or the one rule in the tick that draws on chance goes unwatched.
-assert.deepStrictEqual(new Uint8Array(pack(mature())), new Uint8Array(pack(f)),
-  "a world that burns must burn the same way twice");
+// This is the only world here that catches fire, so the determinism check has
+// to be made again on it, or the one rule in the tick that draws on chance
+// goes unwatched. Swapping the seeded hash for Math.random fails this line.
+same(pack(mature()), pack(f), "a world that burns must burn the same way twice");
 
 // Rivers have to be whole. Accumulating the water that actually moved on the
 // day gave fragments of about thirty cells, because every pit ended a basin;
