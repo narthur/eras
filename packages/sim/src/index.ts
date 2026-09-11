@@ -16,7 +16,7 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 3;
+export const RULE_VERSION = 4;
 
 export type World = {
   seed: number;
@@ -31,6 +31,15 @@ export type World = {
 };
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+
+/**
+ * Whether the sea stands over a cell. Bedrock below the datum is not the same
+ * question: a river that fills its own mouth with silt builds ground that the
+ * sea no longer covers, which is what a delta is. Worldgen leaves ~185 such
+ * cells around the shore to begin with, where the weathered soil already
+ * stands above the water.
+ */
+export const submerged = (w: World, i: number) => w.elev[i] * 100 + w.soil[i] <= 0;
 
 // ---- worldgen -------------------------------------------------------------
 // ponytail: floats here, but only + - * / which are exact per IEEE754, so this
@@ -119,27 +128,30 @@ const height = new Int32Array(CELLS);
 // keeps a patchwork of ages, because a burn grows back at its own cell's rate.
 const FIRE_ODDS = 0.0000005;   // per dry canopy cell per day, a few fires a year
 const BURN_CAP = 500;          // cells, so no one fire takes the continent
-const stack = new Int32Array(BURN_CAP);
+const front = new Int32Array(BURN_CAP * 8);   // the edge of the fire
 const fires: number[] = [];
 
 // Burns outward from the strike through anything dry enough to carry it.
 // Setting the cell to bare on the way in is what stops it burning twice.
 function burn(w: World, at: number) {
   const { veg, water, soil } = w;
-  let top = 0, burnt = 1;
-  veg[at] = 0;
-  stack[top++] = at;
-  // Counted on the way in rather than on the way out: a cell popped off the
-  // stack frees the slot for another, so bounding the stack depth bounds only
-  // how wide the fire front is and lets the fire itself run to twice its cap.
-  while (top > 0) {
-    const i = stack[--top];
+  let n = 0, burnt = 0;
+  front[n++] = at;
+  // The next cell to catch is any cell on the edge, not the oldest or the
+  // newest. Taking the newest sends the fire down one diagonal and scars the
+  // country with straight lines; taking the oldest advances every side at the
+  // same rate and burns a rectangle. Taking one at random off the whole edge
+  // grows the blunt, ragged, roughly round patch a fire actually leaves.
+  while (n > 0 && burnt < BURN_CAP) {
+    const r = (hash2(at, burnt, w.tick + w.seed) * n) | 0;
+    const i = front[r];
+    front[r] = front[--n];   // whoever was last takes the empty place
+    if (veg[i] < 2000) continue;                   // burnt already, or no fuel
+    if (water[i] - (soil[i] >> 3) > 0) continue;   // a river or a lake stops it
+    veg[i] = 0;
+    burnt++;
     for (const j of neighbours(i)) {
-      if (burnt >= BURN_CAP || veg[j] < 2000) continue;
-      if (water[j] - (soil[j] >> 3) > 0) continue;   // a river or a lake stops it
-      veg[j] = 0;
-      stack[top++] = j;
-      burnt++;
+      if (veg[j] >= 2000 && n < front.length) front[n++] = j;
     }
   }
 }
@@ -204,7 +216,7 @@ function drain(w: World) {
   heapN = 0;
   // The sea is the outlet and the only thing already at its final height.
   for (let i = 0; i < CELLS; i++) {
-    if (elev[i] > 0) { fill[i] = FAR; continue; }
+    if (!submerged(w, i)) { fill[i] = FAR; continue; }
     fill[i] = elev[i] * 100 + soil[i];
     heapPush(i);
   }
@@ -227,14 +239,70 @@ function drain(w: World) {
     let best = -1, low = fill[i];
     for (const j of neighbours(i)) if (fill[j] < low) { low = fill[j]; best = j; }
     to[i] = best;
-    acc[i] = elev[i] > 0 ? rain[i] : 0;
+    acc[i] = submerged(w, i) ? 0 : rain[i];
   }
-  // Highest first, so everything upstream of a cell has already reported in.
+  // Highest first, so everything upstream of a cell has already reported in —
+  // its drainage, and the sediment it is carrying.
   for (let k = n - 1; k >= 0; k--) {
     const i = drop[k];
     if (to[i] >= 0) acc[to[i]] += acc[i];
     flow[i] = Math.min(65535, acc[i] >> 6);
+    carve(w, i);
   }
+}
+
+// What a river can carry past a cell: its discharge times the steepness of the
+// ground under it. Carrying less than that, it takes the difference out of the
+// bed; carrying more, it drops the difference. That one rule is the whole
+// shape of a river valley — a gorge where the water is fast, a floodplain
+// where it slows, and a fan of everything it was carrying where it meets the
+// sea, because the sea has no slope and so no capacity at all.
+const CARRY = 260;      // the divisor that sets how fast the land wears down
+const BITE = 40;        // decimetres of bedrock one pass may cut, so no cliff
+const load = new Int32Array(CELLS);   // sediment in transit, millimetres
+
+function carve(w: World, i: number) {
+  const { elev, soil, veg } = w;
+  const j = to[i];
+  // The sea is where everything lands: no slope, no capacity, and the river
+  // has arrived. Whatever it was still carrying builds up at the mouth.
+  if (j < 0 || submerged(w, i)) {
+    soil[i] = Math.min(65535, soil[i] + load[i]);
+    load[i] = 0;
+    return;
+  }
+  // The fall the water feels, which is the fall on the surface it is following.
+  // Shifted apart before multiplying: discharge and fall together overrun a
+  // 32-bit integer on the steep half of a big river.
+  const fall = fill[i] - fill[j];
+  const room = fall > 0 ? (((w.flow[i] >> 3) * (fall >> 3)) / CARRY) | 0 : 0;
+  // Where the flood had to raise the surface — a lake, or a flat it had to
+  // tilt by a millimetre a cell to get the water off — the water stands above
+  // the ground rather than on it, so it cuts nothing and drops what it has.
+  // It is also where the course is least trustworthy: across a filled flat the
+  // routing runs dead straight to the outlet, and erosion let loose on that
+  // carves a diagonal scar across the country that no river would.
+  const bed = fill[i] === elev[i] * 100 + soil[i];
+  if (load[i] > room || !bed) {
+    const settle = bed ? load[i] - room : load[i];   // slack water puts it down
+    soil[i] = Math.min(65535, soil[i] + settle);
+    load[i] -= settle;
+  } else {
+    // Roots hold the ground the same way they hold the moisture.
+    let want = ((room - load[i]) * VEG_MAX) / (VEG_MAX + veg[i] * 3) | 0;
+    const off = Math.min(want, soil[i]);   // loose material goes first
+    soil[i] -= off;
+    load[i] += off;
+    want -= off;
+    // and only a river that has run out of soil to take cuts into the rock
+    if (want >= 100 && elev[i] > 0) {
+      const cut = Math.min((want / 100) | 0, BITE, elev[i]);
+      elev[i] -= cut;
+      load[i] += cut * 100;
+    }
+  }
+  load[j] += load[i];
+  load[i] = 0;
 }
 
 /** One world-day. Rain, flow, erosion, deposition, growth, fire. */
@@ -249,7 +317,7 @@ export function step(w: World): void {
 
   // rain, then evaporation. Vegetation holds moisture back.
   for (let i = 0; i < CELLS; i++) {
-    if (elev[i] > 0) {
+    if (elev[i] * 100 + soil[i] > 0) {
       water[i] = Math.min(65535, water[i] + (rain[i] >> 3));
       const loss = (water[i] * (120 - ((veg[i] * 60) / VEG_MAX | 0))) / 1000 | 0;
       water[i] = Math.max(0, water[i] - loss);
@@ -279,19 +347,13 @@ export function step(w: World): void {
     water[i] -= t;
     water[lowest] = Math.min(65535, water[lowest] + t);
 
-    // sediment: carried in proportion to flow, resisted by roots
-    const carry = Math.min(soil[i], ((t >> 5) * VEG_MAX) / (VEG_MAX + veg[i] * 3) | 0);
-    if (carry > 0) {
-      soil[i] -= carry;
-      soil[lowest] = Math.min(65535, soil[lowest] + carry);
-    }
     height[i] = elev[i] * 100 + soil[i] + water[i];
     height[lowest] = elev[lowest] * 100 + soil[lowest] + water[lowest];
   }
 
   for (let i = 0; i < CELLS; i++) {
     // the sea is a sink: it refills to the datum and swallows whatever arrives
-    if (elev[i] <= 0) {
+    if (elev[i] * 100 + soil[i] <= 0) {
       water[i] = Math.max(0, -(elev[i] * 100 + soil[i]));
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
@@ -304,6 +366,12 @@ export function step(w: World): void {
     // this ran to 3000mm.
     if (soil[i] < 1200 && (w.tick & 15) === 0) soil[i]++;
     const s = soil[i], held = s >> 3, excess = water[i] - held;
+    // Roots reach the top of the profile, not the bottom of it. Water held
+    // below them is still held — it is why the runoff calculation uses the
+    // whole depth — but it is not water the plant can drink, and counting it
+    // would make the deepest ground the driest: a delta with twenty-five
+    // metres of silt on it would read as a desert and stay bare forever.
+    const root = (s < 1200 ? s : 1200) >> 3;
     // What this cell can carry. Rainfall is the permanent term: it varies two to
     // one across the continent and never moves, so it is what makes forest
     // country and grass country different places rather than different years.
@@ -313,7 +381,7 @@ export function step(w: World): void {
     // reads 100% nearly everywhere for the first forty years and every cell
     // then looks identical, which is how the whole continent used to cross from
     // barren to grass to forest in one year each and never change again.
-    const damp = held > 0 ? ((water[i] * 100) / held) | 0 : 0;
+    const damp = root > 0 ? ((water[i] * 100) / root) | 0 : 0;
     const cap = Math.min(clamp((rain[i] - 85) * 110, 0, VEG_MAX), s * 6,
                          damp >= 60 ? VEG_MAX : damp * 160);
     let d: number;
@@ -338,7 +406,7 @@ export function step(w: World): void {
 export const Biome = { Ocean: 0, Lake: 1, River: 2, Rock: 3, Barren: 4, Grass: 5, Forest: 6, Peak: 7 } as const;
 
 export function biome(w: World, i: number): number {
-  if (w.elev[i] <= 0) return Biome.Ocean;
+  if (submerged(w, i)) return Biome.Ocean;
   if (w.water[i] - (w.soil[i] >> 3) > 1200) return Biome.Lake;
   if (w.flow[i] > 200) return Biome.River;
   if (w.elev[i] > 1800) return Biome.Peak;
@@ -417,7 +485,7 @@ export function features(w: World, min = FEATURE_MIN): Feature[] {
   // unrelated puddles if you only look up, down and sideways. Land is joined
   // squarely: two shores touching at one corner are two islands.
   const kinds: [FeatureKind, (i: number) => boolean, boolean][] = [
-    ["island", (i) => w.elev[i] > 0, false],
+    ["island", (i) => !submerged(w, i), false],
     ["lake", (i) => kindAt[i] === Biome.Lake, false],
     ["river", (i) => kindAt[i] === Biome.River, true],
     ["forest", (i) => kindAt[i] === Biome.Forest, false],

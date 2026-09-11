@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, CELLS, SIZE } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, CELLS, SIZE } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -55,12 +55,21 @@ assert.ok(tallest > TICKS, `good ground should grow faster than a point a day, t
 // Fire, on a world already grown over: rare enough that the ordinary run above
 // sees none, so this one starts mature. Deterministic, so it either burns for
 // this seed or it never will.
-const f = generate(1234);
-f.veg.fill(9500);
-for (let i = 0; i < TICKS; i++) step(f);
+const mature = () => {
+  const m = generate(1234);
+  m.veg.fill(9500);
+  for (let i = 0; i < TICKS; i++) step(m);
+  return m;
+};
+const f = mature();
 const burnt = [...f.veg].filter((v, i) => f.elev[i] > 0 && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
 assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
+// The world above is the only one here that catches fire — the ordinary run
+// never grows enough to light — so the determinism check has to be made again
+// on this one, or the one rule in the tick that draws on chance goes unwatched.
+assert.deepStrictEqual(new Uint8Array(pack(mature())), new Uint8Array(pack(f)),
+  "a world that burns must burn the same way twice");
 
 // Rivers have to be whole. Accumulating the water that actually moved on the
 // day gave fragments of about thirty cells, because every pit ended a basin;
@@ -69,14 +78,14 @@ const river = features(a).filter((f) => f.kind === "river");
 assert.ok(river[0].size > 100, `a river should run, longest ${river[0]?.size}`);
 // and it should get to the sea: whatever carries the most drainage is a mouth
 let mouth = 0;
-for (let i = 0; i < CELLS; i++) if (a.elev[i] > 0 && a.flow[i] > a.flow[mouth]) mouth = i;
+for (let i = 0; i < CELLS; i++) if (!submerged(a, i) && a.flow[i] > a.flow[mouth]) mouth = i;
 const mx = mouth % SIZE, my = (mouth / SIZE) | 0;
 let coastal = false;
 for (let dy = -1; dy <= 1; dy++) {
   for (let dx = -1; dx <= 1; dx++) {
     const nx = mx + dx, ny = my + dy;
     if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
-    if (a.elev[ny * SIZE + nx] <= 0) coastal = true;
+    if (submerged(a, ny * SIZE + nx)) coastal = true;
   }
 }
 assert.ok(coastal, `the greatest drainage should end at the sea, ends at ${mx},${my}`);
@@ -91,7 +100,8 @@ assert.deepStrictEqual(found, [...found].sort((p, q) => q.size - p.size || p.y -
   "biggest first, so the panel reads by significance");
 // islands partition the land: every land cell belongs to exactly one, so their
 // sizes must add up to the land that is left once the small ones are dropped
-const land = a.elev.reduce((n, e) => n + (e > 0 ? 1 : 0), 0);
+let land = 0;
+for (let i = 0; i < CELLS; i++) if (!submerged(a, i)) land++;
 const named = islands.reduce((n, f) => n + f.size, 0);
 assert.ok(named <= land, "an island cannot hold more cells than there is land");
 assert.ok(named > land * 0.9, `most land should sit in a nameable island, got ${named}/${land}`);
