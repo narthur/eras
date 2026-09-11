@@ -50,6 +50,7 @@ let connected = false;
 let hover: number | undefined;   // the cell under the cursor, if any
 let found: Feature[] = [];       // what the world has made, none of it named yet
 let lit: Feature | undefined;    // the row the cursor is on, shown on the map
+let showFound = true;            // the rings and the list, which travel together
 let shownText = "";              // what the panel last drew, to leave it alone
 
 // A tap fires mouseenter and never mouseleave, so anything that lights up on
@@ -78,9 +79,11 @@ function paintFound() {
     .sort((a, b) => b.size - a.size)
     .filter((f) => (room[f.kind] = (room[f.kind] ?? 0) + 1) <= 4);
   const text = shown.map((f) => `${f.kind} ${f.size} ${f.x},${f.y}`).join("|");
+  // Visibility first: it is the one thing the toggle changes without the list
+  // changing, and deriving it anywhere else is a second copy of this rule.
+  foundEl.hidden = !showFound || shown.length === 0;
   if (text === shownText) return;   // rebuilding would drop the row under the cursor
   shownText = text;
-  foundEl.hidden = shown.length === 0;
   // Headed, because a bare 27486 beside a bare 125,160 says nothing about
   // being an area and a place. Cells rather than any real measure: a cell has
   // a height in metres but no agreed width, so there is no honest km² to give.
@@ -197,10 +200,12 @@ function draw() {
   ctx.putImageData(image, 0, 0);
   // Passive markers: a ring the eye can find and ignore. No labels — at this
   // scale a letter is four pixels and the panel does the naming of names.
-  ctx.strokeStyle = "#e8ecf29a";
-  ctx.lineWidth = 1;
-  for (const f of found) mark(f, 4);
-  if (lit) { ctx.strokeStyle = "#ffffff"; mark(lit, 10); mark(lit, 16); }
+  if (showFound) {
+    ctx.strokeStyle = "#e8ecf29a";
+    ctx.lineWidth = 1;
+    for (const f of found) mark(f, 4);
+    if (lit) { ctx.strokeStyle = "#ffffff"; mark(lit, 10); mark(lit, 16); }
+  }
   paintClock();
   paintCell();
 }
@@ -217,6 +222,18 @@ for (const name of Object.keys(VIEWS)) {
   };
   nav.append(b);
 }
+
+// A hidden row never fires mouseleave, so a feature lit at the moment the rings
+// go out would still be lit when they come back, with the cursor long gone.
+// paintFound's own no-op guard is about the text, which has not changed here.
+const rings = document.getElementById("rings") as HTMLButtonElement;
+rings.onclick = () => {
+  showFound = !showFound;
+  rings.ariaPressed = String(showFound);
+  lit = undefined;
+  paintFound();
+  draw();
+};
 
 // ponytail: reconnect is a fixed 3s retry. Back off if it ever thrashes.
 function connect() {
