@@ -17,7 +17,7 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 5;
+export const RULE_VERSION = 6;
 
 export type World = {
   seed: number;
@@ -252,10 +252,72 @@ function heapPop(): number {
   return top;
 }
 
+// Soil moves downhill without waiting for rain. Frost lifts it, roots prise it,
+// animals kick it, and gravity takes the rest: on any slope the loose material
+// creeps, faster the steeper it is. This is the other half of a valley — the
+// river cuts the line, creep grades the ground on either side of it and rounds
+// off what the noise of worldgen left sharp. Run with the drainage rather than
+// daily, at a pass's worth each time, because nothing here moves in a day.
+const CREEP = 5;      // ten-thousandths of the fall between two cells, per pass
+const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
+
+const was = new Uint16Array(CELLS);   // the soil as it stood when the pass began
+const side = new Int32Array(8);       // where this cell is shedding to
+const share = new Int32Array(8);      // and how much it would send each way
+
+function crawl(w: World) {
+  const { elev, soil, veg } = w;
+  // Read from a copy, write to the live ground. Read and write the same array
+  // and a cell can pass on soil that only arrived this pass, which it can only
+  // do from the side the scan came from — creep would run faster downhill to
+  // the south-east than to the north-west, for no reason but the loop order.
+  was.set(soil);
+  for (let i = 0; i < CELLS; i++) {
+    const have = was[i];
+    const here = elev[i] * 100 + have;
+    if (have === 0 || here <= 0) continue;
+    let n = 0, demand = 0;
+    for (const j of neighbours(i)) {
+      // A neighbour under the sea is the shoreline, not its own bed: soil that
+      // creeps to the water's edge is gone, and how deep the water is beyond
+      // has nothing to do with how fast the hillside above it moves. Measured
+      // the other way, the drop into deep water sets the rate all round the
+      // coast and the continent wears a ring of bare rock.
+      const there = elev[j] * 100 + was[j];
+      let fall = here - (there > 0 ? there : 0);
+      if (fall <= 0) continue;
+      // And past sixty metres in one cell it is a face rather than a hillside.
+      // Left proportional, the steepest ground sheds soil faster than bedrock
+      // can weather into it and all of it goes to bare rock.
+      if (fall > CLIFF) fall = CLIFF;
+      // Roots hold the ground here as they hold it in the riverbed.
+      let move = (((fall * CREEP) / 10000) * VEG_MAX) / (VEG_MAX + veg[i] * 3) | 0;
+      if (move > fall >> 3) move = fall >> 3;   // never stand the ground on its head
+      if (move <= 0) continue;
+      side[n] = j;
+      share[n] = move;
+      n++;
+      demand += move;
+    }
+    for (let k = 0; k < n; k++) {
+      // A cell with less soil than it would shed loses the same fraction on
+      // every side, rather than filling the first sides the loop happens to
+      // reach and leaving the rest of the hill standing.
+      let move = demand > have ? ((share[k] * have) / demand) | 0 : share[k];
+      const j = side[k];
+      if (move > 65535 - soil[j]) move = 65535 - soil[j];
+      if (move <= 0) continue;
+      soil[i] -= move;
+      soil[j] += move;
+    }
+  }
+}
+
 /** Redraws the drainage network into `flow`, in rain per cell per day. */
 function drain(w: World) {
   const { elev, soil, rain, flow } = w;
   const wet = weather(w.tick, w.seed);
+  crawl(w);        // before the flood, so it fills the surface creep just made
   flow.fill(0);
   load.fill(0);   // nothing is in transit between passes, so a restart is clean
   heapN = 0;
@@ -413,13 +475,19 @@ export function step(w: World): void {
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
     }
-    // Bedrock weathers into new soil, or the island would scour itself bare.
-    // It stops below what flat ground starts with, so it replaces what erosion
-    // strips off the uplands rather than burying the whole world: soil holds
-    // back the first soil/8 of the rain, so deepening it everywhere slowly
-    // strangles the rivers — they fell by two thirds over forty years when
-    // this ran to 3000mm.
-    if (soil[i] < 1200 && (w.tick & 15) === 0) soil[i]++;
+    // Bedrock weathers into soil: the same stuff in another state, so the
+    // ground does not rise — it only becomes something that can be carried.
+    // Taking the rock rather than conjuring the soil is what lets a slope
+    // retreat: creep strips the loose material off it, the bare rock beneath
+    // weathers in turn, and the hillside works its way back. It stops once
+    // there is soil enough to bury the rock, which is also what keeps flat
+    // country from deepening for ever and strangling the rivers — they fell
+    // by two thirds over forty years when soil ran away to 3000mm. Staggered
+    // by cell, so the continent does not weather all on the same morning.
+    if (soil[i] < 1200 && elev[i] > 0 && (w.tick + i) % 1600 === 0) {
+      soil[i] += 100;
+      elev[i] -= 1;
+    }
     const s = soil[i], held = s >> 3, excess = water[i] - held;
     // Roots reach the top of the profile, not the bottom of it. Water held
     // below them is still held — it is why the runoff calculation uses the
