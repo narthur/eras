@@ -75,7 +75,7 @@ const CHECKS: Check[] = [
     name: "basins are not spent",
     of: "closed depressions at the end, as a share of what there were at year twenty",
     lo: 0.8, hi: 4,
-    value: (r) => last(r).basins / at(r, 20).basins,
+    value: (r) => (at(r, 20).basins > 0 ? last(r).basins / at(r, 20).basins : 0),
     why: "worldgen's hollows are a one-time gift. They fell 246 to 25 over two centuries and took every lake with them, which is what slope failure was added to stop",
     known: "slowed, not stopped over centuries: measured 353 at year twenty against 230 at year two hundred. Sixty years cannot see it, so this passes at the default horizon and only fails on a long run. Sinkholes are the candidate",
   },
@@ -112,7 +112,7 @@ const CHECKS: Check[] = [
     of: "the longest reach, as a multiple of how far it is across the continent",
     lo: 0.4, hi: 8,
     value: (r) => (last(r).span > 0 ? last(r).river / last(r).span : 0),
-    why: "accumulation over the raw surface dies at every pit. Nothing ran past about thirty cells until the flood fill went in. Against the continent's own span and not a count of cells: a reach 'runs the whole way' when it gets from somewhere inland to the sea, which is about half a span, and that stays true if SIZE ever changes. The absolute hundred this started as came from a single seed's test assertion and failed the first other seed it met, at 86 cells on a continent exactly as wide as the one where 165 was normal",
+    why: "accumulation over the raw surface dies at every pit. Nothing ran past about thirty cells until the flood fill went in. Against the continent's own span and not a count of cells: a reach 'runs the whole way' when it gets from somewhere inland to the sea, which is about half a span, and that stays true if SIZE ever changes. The absolute hundred this started as came from a single seed's test assertion and failed the first other seed it met, at 86 cells on a continent exactly as wide as the one where 165 was normal. The span is the root of the island's area, so it reads a ragged coastline as narrower than it is and flatters the ratio — the bias is toward passing, so a failure here is real and a pass is the weaker claim",
   },
   {
     name: "the country is mixed",
@@ -123,22 +123,25 @@ const CHECKS: Check[] = [
       const both = v.grass + v.forest;
       return both > 0 ? Math.min(v.grass, v.forest) / both : 0;
     },
-    why: "the whole continent crossed barren to grass to forest in one year each and then never changed again. Forest country and grass country have to be different places, not different years",
+    why: "the whole continent crossed barren to grass to forest in one year each and then never changed again. This is the area split only — whether both kinds of country exist at all. Whether they are in different *places* is a spatial question that no ratio can answer, and is asked separately below",
   },
   {
     name: "the woods take their time",
     of: "years before forest covers a tenth of the land",
     lo: 8, hi: 200,
-    value: (r) => r.series.find((v) => v.forest / v.land > 0.1)?.year ?? YEARS + 1,
+    // Infinity and not `YEARS + 1`: with the default sixty years that sentinel
+    // is 61, which sits inside this range, so a continent where the forest
+    // never arrives at all — the failure this exists to catch — reported a
+    // plausible year and passed.
+    value: (r) => r.series.find((v) => v.forest / v.land > 0.1)?.year ?? Infinity,
     why: "a mature forest is about sixteen world-years by design. A continent that greens in two has no history in it, and one that never greens is barren",
   },
   {
     name: "the woods are clumped",
-    of: "non-forest neighbours per forest cell, out of four",
-    lo: 0, hi: 1.6,
+    of: "boundary per forest cell against the same trees scattered at random",
+    lo: 0, hi: 0.8,
     value: (r) => last(r).edge,
-    why: "the eye reads clumping before it reads anything else. A few big woods sit near half; the same area scattered as noise approaches four, and reads as static rather than as country",
-    known: "nothing has ever been tuned against this. Measured for the first time 2026-09-12",
+    why: "the eye reads clumping before it reads anything else. Against chance and not against four, because raw boundary per cell falls as the square root of area for any fixed shape — so measured raw, a rule that merely grew more forest would read as better clumping. The first version of this check was raw, and its ceiling of 1.6 out of 4 read the world as nearly noise when at 7.6% cover a random scatter gives 3.7 and the world gives 2.1",
   },
   {
     name: "the woods are neither one nor a thousand",
@@ -146,14 +149,21 @@ const CHECKS: Check[] = [
     lo: 0.1, hi: 0.9,
     value: (r) => last(r).biggest,
     why: "one wood holding everything and forty holding a fortieth each are different countries, and mean canopy cannot tell them apart",
-    known: "same measurement, same first look",
+    known: "0.04 to 0.07, so the largest wood holds a twentieth of the forest. Read it beside the clumping figure and not alone: this is a percolation measure, and below the threshold even a well-aggregated field has no single dominant cluster, so some of this is the low forest cover rather than the arrangement",
+  },
+  {
+    name: "the map is made of places",
+    of: "neighbouring land sharing a biome, against the chance of it",
+    lo: 1.5, hi: 100,
+    value: (r) => last(r).mingle,
+    why: "asked of every biome at once, because the area checks cannot see this. Grass and forest can stand in exactly the right proportion and be stirred through each other everywhere, and a map like that reads as static however good its histogram is. One is a world that drew each cell independently",
   },
   {
     name: "slopes fail",
-    of: "channels buried over the run",
-    lo: 1, hi: 100000,
-    value: (r) => r.series.reduce((n, v) => n + v.slides, 0),
-    why: "it is the only rule that can make a closed basin, and it did nothing at all in three earlier versions of itself",
+    of: "channels buried per year",
+    lo: 5, hi: 400,
+    value: (r) => r.series.reduce((n, v) => n + v.slides, 0) / YEARS,
+    why: "it is the only rule that can make a closed basin, and it did nothing at all in three earlier versions of itself. Per year and with a real ceiling: the first version totalled over the whole run against a bound above the number of cells in the world, which is a floor dressed as a range",
   },
   {
     name: "the world burns, rarely",
@@ -214,7 +224,10 @@ const rows: string[] = [];
 const standing: Check[] = [];   // known failures that are still failing
 for (const c of CHECKS) {
   const got = runs.map((r) => ({ seed: r.seed, v: c.value(r) }));
-  const out = got.filter(({ v }) => v < c.lo || v > c.hi);
+  // Number.isFinite first, because NaN fails both comparisons and would
+  // otherwise read as inside the range. A check that cannot be computed has
+  // not passed.
+  const out = got.filter(({ v }) => !Number.isFinite(v) || v < c.lo || v > c.hi);
   const mark = out.length === 0 ? "ok  " : c.known ? "known" : "FAIL";
   if (out.length > 0) { (c.known ? expected++ : failed++); standing.push(c); }
   const shown = got.map(({ v }) => (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0))).join(" ");

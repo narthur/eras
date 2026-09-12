@@ -27,11 +27,18 @@
 //   veg       mean canopy, and how much of the land is grass against forest.
 //             Crossed barren → grass → forest in one year each when the growth
 //             rule took no account of the cell
-//   edge      how ragged the woods are: non-forest neighbours per forest cell.
-//             A landscape of a few big woods sits near half; the same area
-//             scattered as noise approaches four. Nothing has been tuned
-//             against this yet — it is here because clumping is the thing the
-//             eye reads first and no number was watching it
+//   raw/clmp  how ragged the woods are: non-forest neighbours per forest cell,
+//             then that same figure divided by what the trees scattered at
+//             random over the same land would give. Read the second one. Raw
+//             boundary per cell falls as the square root of area for any fixed
+//             shape, so a rule that only grew more forest reads as better
+//             clumping and one that shrank it reads as fragmentation — which
+//             is the comparison this is for. Below one is clumped; one is
+//             indistinguishable from noise
+//   mingl     neighbouring land sharing a biome, against the chance of it.
+//             Asked of every biome at once, because grass and forest can sit
+//             in exactly the right proportion and still be stirred through
+//             each other everywhere, and no per-class number can see it
 //   woods     how many separate woods, and what share of all forest is in the
 //             largest. One wood holding everything is a different country from
 //             forty holding a fortieth each, and mean canopy cannot tell them
@@ -76,7 +83,9 @@ function line(year: number, ms: number) {
     `${(v.veg * 100).toFixed(0)}%`.padStart(4),
     String(v.grass).padStart(6),
     String(v.forest).padStart(6),
+    v.edgeRaw.toFixed(2).padStart(5),
     v.edge.toFixed(2).padStart(5),
+    v.mingle.toFixed(1).padStart(5),
     `${v.patches}/${(v.biggest * 100).toFixed(0)}%`.padStart(9),
     String(v.river).padStart(6),
     String(v.slides).padStart(6),
@@ -88,7 +97,7 @@ function line(year: number, ms: number) {
 console.log(`seed ${SEED}, rules v${RULE_VERSION}, ${YEARS} years of ${DAYS} days, reported every ${EVERY}`);
 console.log([
   " year", "basins", " lakes", " ponded", " damp", " sat", " fall", " soil", " veg",
-  " grass", "forest", " edge", "woods/big", " river", "slides", "   ground", "ms/t",
+  " grass", "forest", "  raw", " clmp", "mingl", "woods/big", " river", "slides", "   ground", "ms/t",
 ].join(" "));
 line(0, 0);
 let spent = 0, ticked = 0;
