@@ -1,4 +1,4 @@
-import { unpack, biome, sea, submerged, Biome, SIZE, CELLS, VEG_MAX, type Feature, type World } from "@eras/sim";
+import { unpack, biome, sea, submerged, Biome, SIZE, CELLS, VEG_MAX, type Event, type Feature, type World } from "@eras/sim";
 
 const rgb = (r: number, g: number, b: number) => 0xff000000 | (b << 16) | (g << 8) | r;
 const mix = (a: number[], b: number[], t: number) =>
@@ -58,9 +58,11 @@ let due = 0;            // when the next world-day is expected, on this machine'
 let connected = false;
 let hover: number | undefined;   // the cell under the cursor, if any
 let found: Feature[] = [];       // what the world has made, none of it named yet
-let lit: Feature | undefined;    // the row the cursor is on, shown on the map
+let lit: Feature | undefined;    // the feature row the cursor is on, shown on the map
+let spot: Event | undefined;     // and the chronicle row, which points the same way
 let showFound = true;            // the rings and the list, which travel together
 let shownText = "";              // what the panel last drew, to leave it alone
+let past: Event[] = [];          // what has happened, newest first
 
 // A tap fires mouseenter and never mouseleave, so anything that lights up on
 // hover would latch on with no way to put it out. Both the map and the list.
@@ -75,6 +77,7 @@ const pixels = new Uint32Array(image.data.buffer);
 const clock = document.getElementById("clock")!;
 const cell = document.getElementById("cell")!;
 const foundEl = document.getElementById("found")!;
+const pastEl = document.getElementById("past")!;
 
 // Nothing is named yet, so the list is what the world is waiting to be asked
 // about. A few of each kind rather than simply the biggest: sorted by size
@@ -112,6 +115,40 @@ function paintFound() {
       el.onmouseleave = () => { lit = undefined; draw(); };
     }
     foundEl.append(el);
+  }
+}
+
+// A date in the world's own terms. Days are no use here: the chronicle spans
+// centuries and nothing in it happened at a time of day.
+const dateOf = (tick: number) => `year ${(tick / 365 | 0) + 1}`;
+
+// Sentences rather than columns. The feature list is a table because it is a
+// list of the same kind of thing measured the same way; this is a list of
+// different things, and a padded number under a heading that fits none of them
+// says less than the plain words do.
+function line(e: Event): string {
+  if (e.kind === "fire") return `fire took ${e.size} cells`;
+  // Metres of rock dropped into the river that undercut the slope. It is the
+  // one thing in this world that makes a lake, so it is worth saying plainly.
+  if (e.kind === "slide") return `a slope fell ${e.size}m into the river`;
+  const m = Math.abs(e.size);
+  return `the sea stands ${m}m ${e.size < 0 ? "low" : "high"}`;
+}
+
+function paintPast() {
+  pastEl.hidden = past.length === 0;
+  pastEl.textContent = "";
+  for (const e of past) {
+    const el = row(`${dateOf(e.tick).padEnd(10)}${line(e)}`);
+    // The same pointing the feature list does: a coordinate is no way to find
+    // a place on a 256-cell map. The sea happens to the whole world and has
+    // nowhere to point, so its row is just a line of text.
+    if (canHover && e.x >= 0) {
+      el.dataset.at = `${e.x},${e.y}`;
+      el.onmouseenter = () => { spot = e; draw(); };
+      el.onmouseleave = () => { spot = undefined; draw(); };
+    }
+    pastEl.append(el);
   }
 }
 
@@ -196,7 +233,7 @@ setInterval(paintClock, 250);
 // Held clear of the border by its own width, so a ring on a coastal feature
 // draws whole rather than as a clipped corner — and the wide rings that say
 // "this one" need more room than the small ones that merely say "something".
-function mark(f: Feature, side: number) {
+function mark(f: { x: number; y: number }, side: number) {
   const r = side / 2, edge = Math.ceil(r);
   const mx = Math.min(Math.max(f.x, edge), SIZE - 1 - edge);
   const my = Math.min(Math.max(f.y, edge), SIZE - 1 - edge);
@@ -228,6 +265,14 @@ function draw() {
     ctx.lineWidth = 1;
     for (const f of found) mark(f, 4);
     if (lit) { ctx.strokeStyle = "#ffffff"; mark(lit, 10); mark(lit, 16); }
+  }
+  // Drawn whether or not the rings are showing: this one was asked for by name,
+  // and it is where something happened rather than one more thing on the map.
+  if (spot) {
+    ctx.strokeStyle = "#ffb45e";
+    ctx.lineWidth = 1;
+    mark(spot, 10);
+    mark(spot, 16);
   }
   paintClock();
   paintCell();
@@ -269,10 +314,15 @@ function connect() {
       // the default for as long as the socket lives. Keep the default instead.
       try {
         const m = JSON.parse(e.data) as
-        Partial<{ tickMs: number; nextIn: number; features: Feature[] }>;
+        Partial<{ tickMs: number; nextIn: number; features: Feature[]; chronicle: Event[] }>;
         if (m.tickMs !== undefined) tickMs = m.tickMs;
         if (m.nextIn !== undefined) due = Date.now() + m.nextIn;
         if (m.features !== undefined) { found = m.features; paintFound(); draw(); }
+        // The whole tail every time, not a delta: twelve lines is nothing
+        // beside the world that arrives with them, and there is no merge to
+        // get wrong. The row under the cursor goes with the rebuild, which is
+        // right — a chronicle only grows at the top, so it was about to move.
+        if (m.chronicle !== undefined) { past = m.chronicle; spot = undefined; paintPast(); draw(); }
       } catch {
         console.warn("could not read the world clock", e.data);
       }

@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, chronicle, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -164,6 +164,10 @@ const ground = (w: World) => {
   for (let i = 0; i < CELLS; i++) m += w.elev[i] * 100 + w.soil[i];
   return m;
 };
+// The log is one stream for the whole process, so it has to start empty here:
+// the runs above are a world of their own and a loud slide in one of them would
+// arrive in the middle of what this block is about to measure.
+chronicle();
 const hill = face();
 const rock = ground(hill);
 let failures = 0, bared = 0;
@@ -178,6 +182,47 @@ assert.ok(failures > 0, "a saturated forty-metre face over a river has to fail")
 assert.strictEqual(ground(hill), rock, "and a slide must not create or destroy any ground");
 assert.ok(bared > 0, `a face that failed should be stripped to rock, ${bared} were`);
 for (let i = 0; i < CELLS; i++) assert.ok(hill.soil[i] < 65535, "debris must not pile past the ceiling");
+
+// The chronicle, asked here because this is where slides are certain. Through a
+// run they are not: the continent sheds about forty a year and only a tenth of
+// them clear LOUD, so a seed can pass a year in silence — which is the point of
+// the bar, and makes a run a poor place to ask whether the writing-down works.
+// The slide is the only kind a made world can produce; fire and the sea travel
+// the same two lines out of the tick.
+const wrote = chronicle();
+assert.deepStrictEqual(chronicle(), [], "draining twice must not hand out the same events twice");
+
+// Same ground, same record: the chronicle has to be as reproducible as the
+// world, or two runs of one seed disagree about what happened in it. Asked
+// here, before anything else in this file slumps a face — the log is one
+// stream and whatever is written next would arrive in the middle of it.
+const rerun = face();
+for (let t = 0; t < 40; t++) { rerun.tick = t; slump(rerun); }
+assert.deepStrictEqual(chronicle(), wrote, "one seed must write one chronicle");
+
+// A face under the bar moves the same ground and says nothing about it. This
+// is the whole of what LOUD does, and the only place it can be asked plainly:
+// on the made world every face is the same height, so the bar is either over
+// all of them or under all of them.
+const low = face();
+for (let i = 0; i < CELLS; i++) if ((i % SIZE) % 2 === 0) low.elev[i] = 250;   // a twenty-metre face
+const shelf = Int16Array.from(low.elev);
+for (let t = 0; t < 40; t++) { low.tick = t; slump(low); }
+assert.ok([...low.elev].some((v, i) => v !== shelf[i]), "a twenty-metre face over a river still has to fail");
+assert.deepStrictEqual(chronicle(), [], "but a slip under the bar is not news");
+
+assert.ok(wrote.length > 0, "a face that failed should be written down");
+assert.deepStrictEqual(wrote, [...wrote].sort((p, q) => p.tick - q.tick), "the chronicle runs forwards");
+for (const e of wrote) {
+  assert.strictEqual(e.kind, "slide");
+  assert.ok(e.tick >= 0 && e.tick < 40, `an event must be dated by the day it happened, got ${e.tick}`);
+  // A forty-metre face fails to the level of the channel, so that is what the
+  // record has to say it dropped — in metres, not in the decimetres elev counts.
+  assert.strictEqual(e.size, 40, "and measured in metres of rock");
+  // Filed against the channel that was buried, which is a trough, not a face.
+  assert.strictEqual(e.x % 2, 1, `a slide is filed against the river at ${e.x},${e.y}`);
+  assert.ok(e.y >= 0 && e.y < SIZE, `${e.x},${e.y} is off the map`);
+}
 
 // Dry ground does not fail, however steep: water is the trigger, which is what
 // ties the one rule that builds relief to the weather.

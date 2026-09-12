@@ -22,6 +22,13 @@
            background: #000000a6; padding: 6px 8px; line-height: 1.5; }
   #found div[data-at] { cursor: default; pointer-events: auto; }
   #found div[data-at]:hover { color: #f0f3f7; background: #2b313b; }
+  /* Bottom right, opposite the feature list: what the world is and what it
+     did, one in each lower corner, neither over the other. */
+  #past { position: absolute; bottom: 12px; right: 12px; margin: 0;
+          white-space: pre; color: #8b93a1; pointer-events: none;
+          background: #000000a6; padding: 6px 8px; line-height: 1.5; }
+  #past div[data-at] { cursor: default; pointer-events: auto; }
+  #past div[data-at]:hover { color: #f0f3f7; background: #2b313b; }
   #cell { position: absolute; top: 12px; left: 12px; margin: 0;
           white-space: pre; color: #8b93a1; pointer-events: none;
           background: #000000a6; padding: 6px 8px; line-height: 1.5; }
@@ -34,5 +41,5 @@
   <nav id="views"></nav>
   <button id="rings" aria-pressed="true">features</button>
 </header>
-<main><canvas id="map"></canvas><pre id="cell" hidden></pre><pre id="found" hidden></pre></main>
+<main><canvas id="map"></canvas><pre id="cell" hidden></pre><pre id="found" hidden></pre><pre id="past" hidden></pre></main>
 <script type="module" src="/src/main.ts"></script>

@@ -76,6 +76,54 @@ export type World = {
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
+// ---- the chronicle --------------------------------------------------------
+// What happened, as against what is. The world state is a photograph: it holds
+// the dammed valley but not the day the slope came down, and a world that is
+// only ever a photograph has no history in it to read. So the tick writes down
+// the few things it does that are discrete enough to have a date.
+//
+// Only rare things. Erosion and growth happen everywhere every day and belong
+// to the picture, not to the record; a chronicle that logged them would be a
+// second copy of the world with none of its clarity. Features are left out for
+// a different reason: they are derived and unnamed, so the same river arriving
+// and departing as it flickers across a threshold would bury everything real.
+
+export type EventKind = "fire" | "slide" | "sea";
+export type Event = { tick: number; kind: EventKind; x: number; y: number; size: number };
+
+const happened: Event[] = [];
+const LOG_CAP = 4096;   // so a bench that never drains cannot grow without end
+
+/** `at` is a cell, or -1 for the things that happen to the whole world. */
+function note(w: World, kind: EventKind, at: number, size: number) {
+  if (happened.length >= LOG_CAP) happened.splice(0, LOG_CAP / 4);
+  const x = at < 0 ? -1 : at % SIZE, y = at < 0 ? -1 : (at / SIZE) | 0;
+  happened.push({ tick: w.tick, kind, x, y, size });
+}
+
+// The sea moves by the century, so it has no day of its own to be recorded on.
+// Noted when it crosses a five-metre mark instead, which is the coarsest thing
+// the world does and the only one that dates an era rather than an afternoon.
+//
+// A crossing is only a crossing if the day before it is known, so the mark is
+// read and not reported whenever the last stepped day was not yesterday's:
+// a world resumed from storage, or a different world entirely. The cost is at
+// most one missed crossing per restart, against the alternative of announcing
+// a tide that moved while nobody was running.
+const MARK = 5000;   // millimetres between one notch and the next
+let notch = 0;
+let notchAt: number | undefined;
+
+/**
+ * What the world has done since this was last asked, oldest first. Drained:
+ * whoever asks takes them, because the caller is the one that can keep them.
+ * Module-level rather than hung off the World, so the packed format — whose
+ * byte length is load-bearing — does not have to learn about it.
+ */
+export function chronicle(): Event[] {
+  return happened.splice(0);
+}
+
 /**
  * Where the sea stands, in millimetres against the datum worldgen was drawn to.
  * The one thing in this world that moves on the scale of an era: a few hundred
@@ -215,7 +263,7 @@ const fires: number[] = [];
 // cell goes bare when it catches rather than when it joins the queue, so the
 // duplicate entries the front collects find no fuel left and quietly do
 // nothing, which is what keeps a cell from burning twice.
-function burn(w: World, at: number) {
+function burn(w: World, at: number): number {
   const { veg, water, soil } = w;
   let n = 0, burnt = 0;
   front[n++] = at;
@@ -236,6 +284,7 @@ function burn(w: World, at: number) {
       if (veg[j] >= 2000 && n < front.length) front[n++] = j;
     }
   }
+  return burnt;
 }
 
 // ---- weather --------------------------------------------------------------
@@ -503,6 +552,13 @@ const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
                           // wet precondition is intermittent and the eligible
                           // faces are few: the continent buries about twenty
                           // channels a year at this figure
+// Metres of rock below which a slide is not news. Measured over three years:
+// the continent sheds about forty a year, median fifteen metres, and a record
+// that took all of them would be a list of one kind of thing with a fire lost
+// somewhere in it. Four a year clear this bar, which is a pace that takes
+// months of watching to fill a panel rather than an afternoon. The ground still
+// moves either way — this decides what is written down, not what happens.
+const LOUD = 40;
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
 export function slump(w: World) {
@@ -561,6 +617,11 @@ export function slump(w: World) {
     soil[dam] += loose;
     veg[face] = 0;                               // a fresh scar is bare rock
     veg[dam] = 0;                                // and the channel is buried
+    // Filed against the channel rather than the face: what makes this worth
+    // recording is the river that stopped, not the hillside that is now short.
+    // In metres of rock, which is what elev counts in tens of.
+    const fell = (rock / 10) | 0;
+    if (fell >= LOUD) note(w, "slide", dam, fell);
   }
 }
 
@@ -753,6 +814,10 @@ export function step(w: World): void {
   // rain, then evaporation. Vegetation holds moisture back.
   const wet = weather(w.tick, w.seed);
   const level = sea(w.tick, w.seed);
+  const here = Math.trunc(level / MARK);   // trunc, so the notches are symmetric about zero
+  if (notchAt === w.tick - 1 && here !== notch) note(w, "sea", -1, (level / 1000) | 0);
+  notch = here;
+  notchAt = w.tick;
   const slide = fronts(w);
   for (let i = 0; i < CELLS; i++) {
     if (elev[i] * 100 + soil[i] > level) {
@@ -875,7 +940,11 @@ export function step(w: World): void {
     // had not grown yet today, and the rules would depend on the loop order.
     if (veg[i] > 5000 && falls < 150 && hash2(i, w.tick, w.seed) < FIRE_ODDS) fires.push(i);
   }
-  for (const i of fires) burn(w, i);
+  for (const i of fires) {
+    const burnt = burn(w, i);
+    // A strike that finds nothing to take is not an event; it is weather.
+    if (burnt > 0) note(w, "fire", i, burnt);
+  }
   w.tick++;
   w.ruleVersion = RULE_VERSION;   // stamp the rules that actually ran this tick
 }

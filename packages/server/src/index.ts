@@ -1,10 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import { features, generate, step, pack, unpack, type Feature, type World } from "@eras/sim";
+import { chronicle, features, generate, step, pack, unpack, type Event, type Feature, type World } from "@eras/sim";
 
 const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
 const MAX_SPECTATORS = 100;   // each one is another ~704KiB down the wire per tick
 const FEATURE_EVERY = 30;    // world-days between sweeps; a forest takes decades
+const KINDS = ["fire", "slide", "sea"] as const;
+const RECENT = 4;   // chronicle lines per kind a viewer is sent. The rest stay in the
+                    // table. Per kind rather than a flat tail for the same reason the
+                    // feature list is: the world does one of these far more often than
+                    // the others, and a plain "last twelve" is a list of landslides
+                    // with the fire that happened last year already off the end of it
 
 // One world-day per real minute. Override to run the world fast while tuning rules:
 //   wrangler dev --var TICK_MS:50
@@ -15,6 +21,19 @@ export class WorldDO extends DurableObject<Env> {
   private genesis = 0;
   private found: Feature[] = [];
   private foundAt = -FEATURE_EVERY;   // so the first sweep runs immediately
+  private recent?: Event[];           // the tail of the chronicle, read once and then kept
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The chronicle outlives the tick that wrote it and is never rewritten, so
+    // it is a table rather than another key beside the world: a row per thing
+    // that happened, kept for as long as the world lasts. `sql.exec` is
+    // synchronous, so this needs no blockConcurrencyWhile to be ready in time.
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS chronicle" +
+      " (tick INTEGER, kind TEXT, x INTEGER, y INTEGER, size INTEGER)");
+  }
+
   private get tickMs() {
     // A zero or unparseable override would make world time infinite, leave the
     // object permanently behind, and reschedule the alarm every 100ms forever.
@@ -53,6 +72,30 @@ export class WorldDO extends DurableObject<Env> {
     await this.ctx.storage.put({ world: pack(this.world!), genesis: this.genesis });
   }
 
+  // Everything the ticks just run wrote down, oldest first. Drained from the
+  // sim whether or not anyone is watching: an event nobody takes is an event
+  // the world forgets, and the point of the chronicle is that it does not.
+  private record(): boolean {
+    const events = chronicle();
+    const sql = this.ctx.storage.sql;
+    for (const e of events) {
+      sql.exec("INSERT INTO chronicle VALUES (?, ?, ?, ?, ?)", e.tick, e.kind, e.x, e.y, e.size);
+    }
+    if (events.length === 0 && this.recent) return false;
+    // Read back rather than appended to in memory, so the tail a viewer sees is
+    // the tail that is actually stored and there is one answer to what happened.
+    // One query a kind: three small reads beat one window function that has to
+    // be decoded before anyone can say what it returns.
+    const tail: Event[] = [];
+    for (const kind of KINDS) {
+      tail.push(...sql.exec<Event>(
+        "SELECT tick, kind, x, y, size FROM chronicle WHERE kind = ?" +
+        " ORDER BY tick DESC, rowid DESC LIMIT ?", kind, RECENT).toArray());
+    }
+    this.recent = tail.sort((a, b) => b.tick - a.tick);
+    return events.length > 0;
+  }
+
   // What the world has made that is big enough to have a name. Swept on a
   // schedule rather than every tick: nothing here changes in a day, and each
   // sweep that finds nothing new still costs every spectator a message.
@@ -71,13 +114,19 @@ export class WorldDO extends DurableObject<Env> {
     for (let i = 0; i < run; i++) step(world);
     await this.save();
 
+    const wrote = this.record();
     const changed = this.sweep(world);
     const behind = world.tick < target;
     await this.ctx.storage.setAlarm(
       behind ? Date.now() + 100 : this.genesis + (world.tick + 1) * this.tickMs);
     if (!behind || run > 0) {
       this.broadcast(pack(world));
-      if (changed) this.broadcast(JSON.stringify({ features: this.found }));
+      // One frame, because the viewer reads whatever fields it finds and two
+      // would be two wakeups for the same news.
+      const news: Record<string, unknown> = {};
+      if (changed) news.features = this.found;
+      if (wrote) news.chronicle = this.recent;
+      if (Object.keys(news).length > 0) this.broadcast(JSON.stringify(news));
     }
   }
 
@@ -108,6 +157,7 @@ export class WorldDO extends DurableObject<Env> {
     // swept and stayed quiet would leave the people already here a full window
     // behind on a world the object had already looked at.
     if (this.sweep(world)) this.broadcast(JSON.stringify({ features: this.found }));
+    this.record();   // no ticks have run, so this only fills `recent` the first time
 
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
@@ -120,6 +170,7 @@ export class WorldDO extends DurableObject<Env> {
       tickMs: this.tickMs,
       nextIn: Math.max(0, this.genesis + (world.tick + 1) * this.tickMs - Date.now()),
       features: this.found,
+      chronicle: this.recent,
     }));
     return new Response(null, { status: 101, webSocket: client });
   }
