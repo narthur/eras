@@ -5,6 +5,7 @@ const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at 
 const SEED = 20260910;
 const MAX_SPECTATORS = 100;   // each one is another ~704KiB down the wire per tick
 const FEATURE_EVERY = 30;    // world-days between sweeps; a forest takes decades
+const PENDING_CAP = 4096;   // events held for a write that keeps failing
 const RECENT = 4;   // chronicle lines per kind a viewer is sent. The rest stay in the
                     // table. Per kind rather than a flat tail for the same reason the
                     // feature list is: the world does one of these far more often than
@@ -36,6 +37,13 @@ export class WorldDO extends DurableObject<Env> {
     // at four slides and a few fires a world-year the table gains about ten
     // thousand rows a real year — single-digit megabytes after a decade, against
     // gigabytes of room. The world is supposed to remember, so it does.
+    //
+    // This shape is frozen the moment it is deployed. `IF NOT EXISTS` is a no-op
+    // against a table that already stands, whatever its columns, so a later
+    // column added here alone would leave the live world with the old shape and
+    // every INSERT throwing — which, since `record()` runs before `setAlarm()`,
+    // is a world that stops ticking. A column added after this ships needs an
+    // ALTER beside it, guarded on `pragma_table_info`.
     const sql = this.ctx.storage.sql;
     sql.exec("CREATE TABLE IF NOT EXISTS chronicle" +
       " (tick INTEGER, rules INTEGER, kind TEXT, x INTEGER, y INTEGER, size INTEGER)");
@@ -99,6 +107,12 @@ export class WorldDO extends DurableObject<Env> {
   // goes in on the next alarm; the rollback means it cannot go in twice.
   private record(): boolean {
     this.pending.push(...chronicle());
+    // A queue that only ever grows is a leak. It can only get here if the write
+    // has been failing for hours, by which point the object is throwing on every
+    // alarm and the world has stopped: the memory is the problem to bound, and
+    // the lost tail is not, because a world that is not ticking is not making
+    // any more history to lose. Oldest first, as the sim's own log sheds.
+    if (this.pending.length > PENDING_CAP) this.pending.splice(0, this.pending.length - PENDING_CAP);
     const sql = this.ctx.storage.sql;
     for (const e of this.pending) {
       sql.exec("INSERT INTO chronicle VALUES (?, ?, ?, ?, ?, ?)",
