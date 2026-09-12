@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter ./packages/server --filter ./packages/web dev",
     "test": "pnpm --filter @eras/sim test",
+    "bench": "pnpm --filter @eras/sim bench",
     "build": "pnpm --filter @eras/web build",
     "deploy": "pnpm run build && pnpm --filter @eras/server run deploy",
     "typecheck": "tsc -p packages/sim --noEmit && tsc -p packages/server --noEmit && tsc -p packages/web --noEmit"

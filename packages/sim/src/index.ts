@@ -60,7 +60,7 @@ function falling(i: number, slide: number): number {
 }
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
                   // 700mm a year, which is what a temperate pond loses
-export const RULE_VERSION = 9;
+export const RULE_VERSION = 10;
 
 export type World = {
   seed: number;
@@ -454,6 +454,104 @@ function winds(w: World) {
 const CREEP = 5;      // ten-thousandths of the fall between two cells, per pass
 const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
 
+// A slope fails into the river that undercut it, and dams it.
+//
+// This is the one rule in the world that can make a closed basin. Everything
+// else grades the land down — sediment fills pits, creep rounds them off, and
+// tectonics is excluded from the tick by design — so the 246 depressions
+// worldgen leaves are a gift the world spends: 170 left by year ten, 61 by
+// year 120, and no standing water at all by then.
+//
+// Written from the channel rather than from the hillside, which is the whole
+// of what makes it work. Asked the obvious way round — take the steepest
+// faces on the continent and let them fail downhill — it dams nothing,
+// because steepness and drainage are anti-correlated here: of the 547 faces
+// with a thirty-metre drop, exactly one had a stream at the foot of it, and
+// the trunk valleys that carry the water are broad and gentle. Sending the
+// debris down the gully to look for water was no better; the walk stalls on
+// the first flat, and the median face cannot reach a channel carrying more
+// than one cell's worth of rain. Undercutting is the real mechanism anyway: a
+// river cuts the toe out of the slope above it, saturated ground on that
+// slope lets go, and the channel is buried — which is why landslide dams sit
+// on rivers rather than wherever the ground happens to be steepest.
+//
+// The debris arrives as bedrock, not soil, and that also decides whether the
+// rule works. Delivered as soil a dam is a sponge and a snack: field capacity
+// is soil/8, so six metres of debris holds 750mm of water against the sky and
+// no pond forms, and `carve` takes loose material first, so the stream cuts
+// it within a pass. Measured that way it raised the depression count to 225
+// at year thirty against the baseline's 119 and still left the standing water
+// *lower* — more basins, drier world. So rock moves as rock and soil as soil,
+// each conserved in its own unit, and nothing converts.
+const DAMS = 500;         // drainage past which a channel is worth damming. Set
+                          // at the trunk rivers instead, the dams were cut as
+                          // fast as they were built: the bigger the stream, the
+                          // more cutting power stands against what blocks it
+const SCARP = 6000;       // millimetres a face must stand above the channel
+const SHED = 1;           // the face fails to the level of the channel below it,
+                          // so the channel rises by the whole height it stood
+                          // under. Anything less is cut straight back out: BITE
+                          // lets a river take four metres of bedrock in one
+                          // pass, and a third of the face height came to 3.6-5.6m,
+                          // so every dam of that size went in the pass that
+                          // built it and the basin count moved by three in
+                          // thirty years
+const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days, so a wet
+                          // slope over a stream fails about once a decade
+const slides: number[] = [];   // face, channel and rock, decided before any of it moves
+
+export function slump(w: World) {
+  const { elev, soil, water, veg, flow } = w;
+  const level = sea(w.tick, w.seed);
+  slides.length = 0;
+  for (let i = 0; i < CELLS; i++) {
+    if (flow[i] <= DAMS) continue;
+    const here = elev[i] * 100 + soil[i];
+    if (here <= level) continue;
+    // The highest slope standing over this reach, and it has to be wet. Ground
+    // holding all it can is ground with no friction left, which is why real
+    // slopes fail in the wet and not in the drought — and it ties the one rule
+    // that builds relief to the weather.
+    let face = -1, top = here + SCARP;
+    for (const j of neighbours(i)) {
+      if (water[j] < soil[j] >> 3) continue;
+      const there = elev[j] * 100 + soil[j];
+      if (there > top) { top = there; face = j; }
+    }
+    if (face < 0) continue;
+    // Roots hold the face together, as they hold the riverbed and the hillside.
+    const odds = (SLIDE_ODDS * VEG_MAX) / (VEG_MAX + veg[face] * 3);
+    if (hash2(i, w.tick, w.seed + 2311) >= odds) continue;
+    // Decided against the ground as it stood and applied afterwards, for the
+    // same reason fires are collected rather than lit where they start: a
+    // slide that ran as it was found would bury a channel that a later cell
+    // was still measuring itself against, so what failed would depend on
+    // which way the scan happened to be going.
+    slides.push(face, i, (top - here) / SHED / 100 | 0);
+  }
+  for (let k = 0; k < slides.length; k += 3) {
+    const face = slides[k], dam = slides[k + 1];
+    let rock = slides[k + 2];
+    // A ridge cell can stand over two channels and be picked by both, and the
+    // second of those was measured against ground that has already gone. Never
+    // stand the ground on its head: a face no longer above its channel has
+    // nothing left to give it.
+    if (elev[face] * 100 + soil[face] <= elev[dam] * 100 + soil[dam]) continue;
+    // Only what fits, in both units. What will not fit stays on the face
+    // rather than being quietly destroyed — the ground has to balance.
+    if (rock > 32767 - elev[dam]) rock = 32767 - elev[dam];
+    if (rock > elev[face] + 32768) rock = elev[face] + 32768;
+    const loose = Math.min(soil[face], 65535 - soil[dam]);
+    if (rock <= 0 && loose <= 0) continue;
+    elev[face] -= rock;
+    elev[dam] += rock;
+    soil[face] -= loose;
+    soil[dam] += loose;
+    veg[face] = 0;                               // a fresh scar is bare rock
+    veg[dam] = 0;                                // and the channel is buried
+  }
+}
+
 const was = new Uint16Array(CELLS);   // the soil as it stood when the pass began
 const side = new Int32Array(8);       // where this cell is shedding to
 const share = new Int32Array(8);      // and how much it would send each way
@@ -513,6 +611,7 @@ function drain(w: World) {
   const wet = weather(w.tick, w.seed);
   winds(w);        // where the rain falls, given the shape of the land today
   crawl(w);        // before the flood, so it fills the surface creep just made
+  slump(w);        // and before it too, so a new dam ponds on the pass it forms
   flow.fill(0);
   load.fill(0);   // nothing is in transit between passes, so a restart is clean
   heapN = 0;

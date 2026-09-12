@@ -5,7 +5,8 @@
   "main": "./src/index.ts",
   "exports": { ".": "./src/index.ts" },
   "scripts": {
-    "test": "node --experimental-strip-types --no-warnings src/test.ts"
+    "test": "node --experimental-strip-types --no-warnings src/test.ts",
+    "bench": "node --experimental-strip-types --no-warnings src/bench.ts"
   },
   "devDependencies": { "typescript": "^5.6.0" }
 }

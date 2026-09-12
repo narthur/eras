@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, CELLS, SIZE } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -134,6 +134,89 @@ assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`
 // to be made again on it, or the one rule in the tick that draws on chance
 // goes unwatched. Swapping the seeded hash for Math.random fails this line.
 same(pack(mature()), pack(f), "a world that burns must burn the same way twice");
+
+// Slope failure, asked directly. It is the only rule that can make a closed
+// basin, so it is the only one holding the continent's lakes open past the
+// first century — and it moves ground in two units at once, so it is exactly
+// the shape of rule that silently destroys mass. Asked on a made surface
+// rather than through a run, because the undercut channels are a few dozen
+// cells of one world and a run gives no way to know whether the ones that
+// failed were the ones that should have.
+const face = (): World => {
+  const w: World = {
+    seed: 1234, tick: 0, ruleVersion: 0,
+    elev: new Int16Array(CELLS), soil: new Uint16Array(CELLS),
+    water: new Uint16Array(CELLS), veg: new Uint16Array(CELLS),
+    flow: new Uint16Array(CELLS), rain: new Uint8Array(CELLS),
+  };
+  for (let i = 0; i < CELLS; i++) {
+    const high = (i % SIZE) % 2 === 0;       // a forty-metre face beside every channel
+    w.elev[i] = high ? 450 : 50;
+    w.soil[i] = 400;
+    w.water[i] = 65535;                      // saturated, which is what fails a slope
+    w.veg[i] = 0;
+    w.flow[i] = high ? 0 : 5000;             // and the troughs carry rivers
+  }
+  return w;
+};
+const ground = (w: World) => {
+  let m = 0;
+  for (let i = 0; i < CELLS; i++) m += w.elev[i] * 100 + w.soil[i];
+  return m;
+};
+const hill = face();
+const rock = ground(hill);
+let failures = 0, bared = 0;
+for (let t = 0; t < 40; t++) {
+  hill.tick = t;
+  const before = Int16Array.from(hill.elev);
+  slump(hill);
+  for (let i = 0; i < CELLS; i++) if (before[i] !== hill.elev[i]) failures++;
+}
+for (let i = 0; i < CELLS; i++) if ((i % SIZE) % 2 === 0 && hill.soil[i] === 0) bared++;
+assert.ok(failures > 0, "a saturated forty-metre face over a river has to fail");
+assert.strictEqual(ground(hill), rock, "and a slide must not create or destroy any ground");
+assert.ok(bared > 0, `a face that failed should be stripped to rock, ${bared} were`);
+for (let i = 0; i < CELLS; i++) assert.ok(hill.soil[i] < 65535, "debris must not pile past the ceiling");
+
+// Dry ground does not fail, however steep: water is the trigger, which is what
+// ties the one rule that builds relief to the weather.
+const dry = face();
+dry.water.fill(0);
+const still = ground(dry);
+const wasElev = Int16Array.from(dry.elev);
+for (let t = 0; t < 40; t++) { dry.tick = t; slump(dry); }
+assert.strictEqual(ground(dry), still, "dry ground cannot move");
+assert.deepStrictEqual([...dry.elev], [...wasElev], "and a dry face must stand");
+
+// A channel with no river in it is not undercut, so nothing above it falls:
+// the rule is about rivers cutting slopes out, not about steepness alone.
+const unwatered = face();
+unwatered.flow.fill(0);
+const quiet = ground(unwatered);
+const heldElev = Int16Array.from(unwatered.elev);
+for (let t = 0; t < 40; t++) { unwatered.tick = t; slump(unwatered); }
+assert.deepStrictEqual([...unwatered.elev], [...heldElev], "a slope over dry ground stands");
+assert.strictEqual(ground(unwatered), quiet, "and nothing moves");
+
+// Roots hold it: the same faces under closed canopy fail less often.
+const rooted = face();
+rooted.veg.fill(VEG_MAX);
+let held = 0;
+for (let t = 0; t < 40; t++) {
+  rooted.tick = t;
+  const before = Int16Array.from(rooted.elev);
+  slump(rooted);
+  for (let i = 0; i < CELLS; i++) if (before[i] !== rooted.elev[i]) held++;
+}
+assert.ok(held < failures, `canopy should hold a face together, ${held} failed against ${failures}`);
+
+// And the tick has to be using it. A scar is a drop no other rule can make:
+// weathering takes one decimetre at a time, creep takes none at all.
+const genesis = generate(1234);
+let scars = 0;
+for (let i = 0; i < CELLS; i++) if (genesis.elev[i] - a.elev[i] >= 20) scars++;
+assert.ok(scars > 0, "a year should leave a slide scar somewhere");
 
 // Rivers have to be whole. Accumulating the water that actually moved on the
 // day gave fragments of about thirty cells, because every pit ended a basin;
