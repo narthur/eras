@@ -460,8 +460,9 @@ const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
 // else grades the land down — sediment fills pits, creep rounds them off, and
 // tectonics is excluded from the tick by design. Before this rule the 246
 // depressions worldgen leaves were a gift the world spent: 170 left by year
-// ten, 25 by year two hundred, and a single cell of standing water. With it
-// the count holds above three hundred instead.
+// ten, 25 by year two hundred, and a single cell of standing water. With it the
+// count climbs instead — 366 by year twenty and 433 by year one hundred, with
+// 296 cells under standing water against the 53 the same world had without.
 //
 // Written from the channel rather than from the hillside, which is the whole
 // of what makes it work. Asked the obvious way round — take the steepest
@@ -499,8 +500,9 @@ const SHED = 1;           // the face fails to the level of the channel below it
                           // thirty years
 const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
                           // that stayed wet would go inside two years, but the
-                          // wet precondition is itself intermittent, and the
-                          // continent as a whole sheds a few hundred a year
+                          // wet precondition is intermittent and the eligible
+                          // faces are few: the continent buries about twenty
+                          // channels a year at this figure
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
 export function slump(w: World) {
