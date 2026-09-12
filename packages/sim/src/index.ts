@@ -18,7 +18,7 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 7;
+export const RULE_VERSION = 8;
 
 export type World = {
   seed: number;
@@ -35,13 +35,43 @@ export type World = {
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
 /**
+ * Where the sea stands, in millimetres against the datum worldgen was drawn to.
+ * The one thing in this world that moves on the scale of an era: a few hundred
+ * years from trough to peak, thirty metres either way at the extremes, which is
+ * a sixth of the continent's area. At low water the islands join the mainland
+ * and the rivers cut down to a lower outlet; at high water the deltas drown.
+ *
+ * Anchored so that it is exactly zero at tick zero for any seed, because a
+ * world that has been running to one datum should not find the sea somewhere
+ * else the moment these rules arrive. Memoised on the day, since every cell in
+ * every pass asks for it.
+ */
+const TIDE = 25000;   // millimetres at the far end of the swing
+const ERA = 40000;    // ticks of noise, so a swing is a century or three
+let seaAt = -1, seaOf = 0, seaIs = 0;
+
+export function sea(tick: number, seed: number): number {
+  if (tick !== seaAt || seed !== seaOf) {
+    seaAt = tick;
+    seaOf = seed;
+    // Stretched away from the middle, for the same reason the weather is: two
+    // points of value noise sit near the middle most of the time, and a sea
+    // that never leaves the middle is a sea that never goes anywhere.
+    const swing = (t: number) => clamp((vnoise(t / ERA, 2.5, seed + 3571) - 0.5) * 1.9, -0.5, 0.5);
+    seaIs = ((swing(tick) - swing(0)) * TIDE) | 0;
+  }
+  return seaIs;
+}
+
+/**
  * Whether the sea stands over a cell. Bedrock below the datum is not the same
  * question: a river that fills its own mouth with silt builds ground that the
  * sea no longer covers, which is what a delta is. Worldgen leaves ~185 such
  * cells around the shore to begin with, where the weathered soil already
  * stands above the water.
  */
-export const submerged = (w: World, i: number) => w.elev[i] * 100 + w.soil[i] <= 0;
+export const submerged = (w: World, i: number) =>
+  w.elev[i] * 100 + w.soil[i] <= sea(w.tick, w.seed);
 
 // ---- worldgen -------------------------------------------------------------
 // ponytail: floats here, but only + - * / which are exact per IEEE754, so this
@@ -102,7 +132,8 @@ export function generate(seed: number): World {
     let slope = 0;
     for (const j of neighbours(i)) slope = Math.max(slope, Math.abs(elev[i] - elev[j]));
     soil[i] = clamp(1400 - slope * 5, 0, 1400);
-    // the same question submerged() asks: the clamp makes the two agree here
+    // the same question submerged() asks — and the sea is at the datum on the
+    // first day by construction, so there is nothing to subtract for it here
     if (elev[i] <= 0) water[i] = Math.max(0, -(elev[i] * 100 + soil[i]));
   }
   const world = { seed, tick: 0, ruleVersion: RULE_VERSION, elev, soil, water, veg, flow, rain };
@@ -381,6 +412,7 @@ const share = new Int32Array(8);      // and how much it would send each way
 
 function crawl(w: World) {
   const { elev, soil, veg } = w;
+  const level = sea(w.tick, w.seed);
   // Read from a copy, write to the live ground. Read and write the same array
   // and a cell can pass on soil that only arrived this pass, which it can only
   // do from the side the scan came from — creep would run faster downhill to
@@ -389,7 +421,7 @@ function crawl(w: World) {
   for (let i = 0; i < CELLS; i++) {
     const have = was[i];
     const here = elev[i] * 100 + have;
-    if (have === 0 || here <= 0) continue;
+    if (have === 0 || here <= level) continue;
     let n = 0, demand = 0;
     for (const j of neighbours(i)) {
       // A neighbour under the sea is the shoreline, not its own bed: soil that
@@ -398,7 +430,7 @@ function crawl(w: World) {
       // the other way, the drop into deep water sets the rate all round the
       // coast and the continent wears a ring of bare rock.
       const there = elev[j] * 100 + was[j];
-      let fall = here - (there > 0 ? there : 0);
+      let fall = here - (there > level ? there : level);
       if (fall <= 0) continue;
       // And past sixty metres in one cell it is a face rather than a hillside.
       // Left proportional, the steepest ground sheds soil faster than bedrock
@@ -441,6 +473,19 @@ function drain(w: World) {
     if (!submerged(w, i)) { fill[i] = FAR; continue; }
     fill[i] = elev[i] * 100 + soil[i];
     heapPush(i);
+  }
+  // The flood needs somewhere to drain to. There is always sea on this map —
+  // the tide reaches half the depth worldgen clamps the floor at, and the
+  // border is forced to that floor — but a world with none would leave every
+  // cell unvisited and every receiver pointing at nothing, so in that case the
+  // lowest cell stands in as the outlet.
+  if (heapN === 0) {
+    let low = 0;
+    for (let i = 1; i < CELLS; i++) {
+      if (elev[i] * 100 + soil[i] < elev[low] * 100 + soil[low]) low = i;
+    }
+    fill[low] = elev[low] * 100 + soil[low];
+    heapPush(low);
   }
   let n = 0;
   while (heapN > 0) {
@@ -548,8 +593,9 @@ export function step(w: World): void {
 
   // rain, then evaporation. Vegetation holds moisture back.
   const wet = weather(w.tick, w.seed);
+  const level = sea(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
-    if (elev[i] * 100 + soil[i] > 0) {
+    if (elev[i] * 100 + soil[i] > level) {
       water[i] = Math.min(65535, water[i] + ((((rain[i] * wet) / 100) | 0) >> 3));
       const loss = (water[i] * (120 - ((veg[i] * 60) / VEG_MAX | 0))) / 1000 | 0;
       water[i] = Math.max(0, water[i] - loss);
@@ -584,9 +630,9 @@ export function step(w: World): void {
   }
 
   for (let i = 0; i < CELLS; i++) {
-    // the sea is a sink: it refills to the datum and swallows whatever arrives
-    if (elev[i] * 100 + soil[i] <= 0) {
-      water[i] = Math.max(0, -(elev[i] * 100 + soil[i]));
+    // the sea is a sink: it refills to its own level and swallows what arrives
+    if (elev[i] * 100 + soil[i] <= level) {
+      water[i] = Math.max(0, level - (elev[i] * 100 + soil[i]));
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
     }

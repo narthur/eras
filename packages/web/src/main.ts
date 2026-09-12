@@ -1,9 +1,13 @@
-import { unpack, biome, Biome, SIZE, CELLS, VEG_MAX, type Feature, type World } from "@eras/sim";
+import { unpack, biome, sea, submerged, Biome, SIZE, CELLS, VEG_MAX, type Feature, type World } from "@eras/sim";
 
 const rgb = (r: number, g: number, b: number) => 0xff000000 | (b << 16) | (g << 8) | r;
 const mix = (a: number[], b: number[], t: number) =>
   rgb(a[0] + (b[0] - a[0]) * t | 0, a[1] + (b[1] - a[1]) * t | 0, a[2] + (b[2] - a[2]) * t | 0);
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+// How far below the sea's own surface a cell's floor lies, in millimetres. The
+// sea level moves by the century, so depth is no longer just the elevation.
+const deep = (w: World, i: number) =>
+  sea(w.tick, w.seed) - (w.elev[i] * 100 + w.soil[i]);
 
 const BIOME_COLOUR = [
   rgb(28, 52, 92),    // Ocean (shaded by depth below)
@@ -20,12 +24,12 @@ const BIOME_COLOUR = [
 const VIEWS: Record<string, (w: World, i: number) => number> = {
   biome: (w, i) => {
     const b = biome(w, i);
-    if (b === Biome.Ocean) return mix([12, 24, 48], [46, 78, 126], clamp01(1 + w.elev[i] / 500));
+    if (b === Biome.Ocean) return mix([12, 24, 48], [46, 78, 126], clamp01(1 - deep(w, i) / 50000));
     return BIOME_COLOUR[b];
   },
   elevation: (w, i) => {
-    const e = w.elev[i];
-    if (e <= 0) return mix([10, 20, 44], [58, 96, 148], clamp01(1 + e / 500));
+    if (submerged(w, i)) return mix([10, 20, 44], [58, 96, 148], clamp01(1 - deep(w, i) / 50000));
+    const e = (w.elev[i] * 100 + w.soil[i] - sea(w.tick, w.seed)) / 100 | 0;
     // A measurement ramp, not a hypsometric tint. Green lowland rising to brown
     // upland and white summits is what land cover looks like, so the eye reads
     // it as forest, rock and snow no matter what the legend says. Violet
@@ -36,7 +40,7 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
       : mix([196, 62, 106], [250, 226, 158], clamp01((e - 900) / 1600));
   },
   water: (w, i) => {
-    if (w.elev[i] <= 0) return rgb(20, 32, 54);
+    if (submerged(w, i)) return rgb(20, 32, 54);
     // moisture as the base, the drainage network drawn over it
     const damp = mix([44, 42, 38], [86, 108, 130],
       clamp01(w.water[i] / Math.max(1, w.soil[i] >> 3)));
@@ -44,7 +48,7 @@ const VIEWS: Record<string, (w: World, i: number) => number> = {
     return f > 30 ? mix([70, 120, 180], [190, 232, 255], clamp01(f / 2000)) : damp;
   },
   vegetation: (w, i) =>
-    w.elev[i] <= 0 ? rgb(20, 26, 36) : mix([62, 54, 42], [92, 200, 96], clamp01(w.veg[i] / VEG_MAX)),
+    submerged(w, i) ? rgb(20, 26, 36) : mix([62, 54, 42], [92, 200, 96], clamp01(w.veg[i] / VEG_MAX)),
 };
 
 let view = "biome";
@@ -132,7 +136,7 @@ function paintCell() {
   const held = world.soil[i] >> 3;
   const standing = Math.max(0, world.water[i] - held);
   const rows: [string, string][] = [
-    ["elev", `${Math.round(world.elev[i] / 10)}m`],
+    ["height", `${Math.round((world.elev[i] * 100 + world.soil[i] - sea(world.tick, world.seed)) / 1000)}m`],
     ["soil", `${world.soil[i]}mm`],
     ["damp", held > 0 ? `${Math.min(100, Math.round((world.water[i] * 100) / held))}%` : "—"],
     ["standing", `${standing}mm`],
@@ -210,7 +214,9 @@ function draw() {
   let deep = 0;
   for (let i = 0; i < CELLS; i++) {
     pixels[i] = colour(world, i);
-    if (world.elev[i] < world.elev[deep]) deep = i;
+    // the deepest water, which is the lowest surface rather than the lowest
+    // bedrock — silt fills a trench without making it shallower to look at
+    if (world.elev[i] * 100 + world.soil[i] < world.elev[deep] * 100 + world.soil[deep]) deep = i;
   }
   const v = pixels[deep];   // 0xAABBGGRR, the byte order the canvas stores
   document.body.style.background = `rgb(${v & 255} ${(v >> 8) & 255} ${(v >> 16) & 255})`;
