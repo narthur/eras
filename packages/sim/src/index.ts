@@ -18,7 +18,46 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-const STORMS = 8;  // days between storms over a given patch of country
+// Rain arrives as fronts: a field of wet and dry country that drifts east
+// across the map, soaking a swathe of it for a few days at a time. Drawn on a
+// coarse lattice once a tick and read off it smoothly, because a storm drawn
+// per patch of ground owes nothing to the patch beside it and the country ends
+// up tiled in hard eight-cell squares — which is exactly what it looked like.
+const STORMS = 8;   // the long-run ratio of dry days to wet at a given place
+const PATCH = 8;    // cells across a patch of weather
+const DRIFT = 2;    // days for the front to move on by one patch
+const WET = 645;    // above this the front is raining, in thousandths
+const SPAN = SIZE / PATCH + 2;
+const sky = new Int32Array(SPAN * SPAN);   // the front, on its coarse lattice
+
+/** Draws today's weather front and returns how far it has drifted into it. */
+function fronts(w: World): number {
+  // Negative on purpose. A positive tick term reads the field at
+  // x/PATCH + tick/DRIFT, which walks the pattern toward smaller x — west,
+  // into the weather instead of along with it. The wind here comes from the
+  // north-west, so the front has to cross eastward: PATCH/DRIFT cells a day.
+  const off = -w.tick / DRIFT;
+  const base = Math.floor(off);
+  for (let ny = 0; ny < SPAN; ny++) {
+    for (let nx = 0; nx < SPAN; nx++) {
+      sky[ny * SPAN + nx] = (hash2(nx + base, ny, w.seed + 7717) * 1000) | 0;
+    }
+  }
+  return off - base;
+}
+
+/** How hard it is raining at a cell, in thousandths of a storm. */
+function falling(i: number, slide: number): number {
+  const px = (i % SIZE) / PATCH + slide, ix = px | 0, fx = px - ix;
+  const py = ((i / SIZE) | 0) / PATCH, iy = py | 0, fy = py - iy;
+  const o = iy * SPAN + ix;
+  const top = sky[o] + (sky[o + 1] - sky[o]) * fx;
+  const low = sky[o + SPAN] + (sky[o + SPAN + 1] - sky[o + SPAN]) * fx;
+  const here = (top + (low - top) * fy) | 0;
+  // Soft at the edges, so the rain shades off across the country rather than
+  // stopping at a line, and so a front brings a rising and falling of it.
+  return here < WET ? 0 : Math.min(1000, (here - WET) * 5);
+}
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
                   // 700mm a year, which is what a temperate pond loses
 export const RULE_VERSION = 9;
@@ -603,6 +642,7 @@ export function step(w: World): void {
   // rain, then evaporation. Vegetation holds moisture back.
   const wet = weather(w.tick, w.seed);
   const level = sea(w.tick, w.seed);
+  const slide = fronts(w);
   for (let i = 0; i < CELLS; i++) {
     if (elev[i] * 100 + soil[i] > level) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
@@ -625,9 +665,9 @@ export function step(w: World): void {
       // dry and still have rivers in it. Drawn for a patch of country rather
       // than a cell, because weather arrives as fronts.
       const day = (((rain[i] * wet) / 100) | 0) >> 4;
-      const patch = ((i % SIZE) >> 3) + (((i / SIZE) | 0) >> 3) * 67;
-      if (hash2(patch, w.tick, w.seed + 7717) < 1 / STORMS) {
-        water[i] = Math.min(65535, water[i] + day * STORMS);
+      const pour = falling(i, slide);
+      if (pour > 0) {
+        water[i] = Math.min(65535, water[i] + ((day * STORMS * pour) / 1000 | 0));
       }
       // Two different things dry out at two different rates. Water held in the
       // soil goes as a share of what is there, faster where there is no canopy
