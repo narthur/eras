@@ -13,8 +13,9 @@
 //
 // The numbers that have caught something, and what they caught:
 //
-//   basins    closed depressions. Fell 246 → 25 over two centuries with
-//             nothing able to make one, which is what slope failure is for
+//   basins    closed depressions. With nothing in the rules able to make one,
+//             these fell 246 → 25 over two centuries and took the lakes with
+//             them, which is what slope failure was added for
 //   lakes     cells under standing water. Swings with the weather, so read it
 //             against the basin count rather than on its own
 //   ponded    total standing water. The same thing without the threshold, so
@@ -30,9 +31,14 @@
 //             rule took no account of the cell
 //   river     the longest reach, which is how the priority flood was found to
 //             be necessary: without it nothing ran past about thirty cells
-//   scars     ground that dropped more than two metres since the last report.
-//             Weathering takes a decimetre at a time and creep takes none, so
-//             this counts slope failures and nothing else
+//   slides    channels buried since the last report. A drop of a given size
+//             does not identify a slide — `carve` takes up to BITE, four
+//             metres of bedrock, in one pass, so ordinary river incision
+//             clears any threshold a landslide would. What is unique to a
+//             slide is the other end of it: raising bedrock. Worldgen aside,
+//             every other rule only ever lowers it, so a cell whose rock rose
+//             was buried by a slide and nothing else. Two slides into one
+//             channel inside one report window count once
 //   ground    total rock and soil. Should not move at all. Sediment has been
 //             silently destroyed at the soil ceiling twice
 import { generate, step, biome, Biome, features, submerged, CELLS, SIZE, VEG_MAX, RULE_VERSION } from "./index.ts";
@@ -40,18 +46,20 @@ import { generate, step, biome, Biome, features, submerged, CELLS, SIZE, VEG_MAX
 const YEARS = Number(process.argv[2] ?? 100);
 const SEED = Number(process.argv[3] ?? 1234);
 const EVERY = Number(process.argv[4] ?? Math.max(1, Math.round(YEARS / 10)));
-const DAYS = 400;   // days in a year, as the rest of the world counts them
+const DAYS = 400;   // days to a year here. The world itself has no year in it —
+                    // the viewer's clock happens to divide by 365 — so this is
+                    // only the interval these rows are reported on
 
 const w = generate(SEED);
 let was = Int16Array.from(w.elev);
 
 function line(year: number, ms: number) {
   let basins = 0, lakes = 0, ponded = 0, ground = 0, soil = 0, veg = 0;
-  let grass = 0, forest = 0, land = 0, scars = 0, saturated = 0;
+  let grass = 0, forest = 0, land = 0, slides = 0, saturated = 0;
   const falls: number[] = [], damps: number[] = [];
   for (let i = 0; i < CELLS; i++) {
     ground += w.elev[i] * 100 + w.soil[i];
-    if (was[i] - w.elev[i] >= 20) scars++;
+    if (w.elev[i] > was[i]) slides++;
     if (submerged(w, i)) continue;
     land++;
     soil += w.soil[i];
@@ -101,7 +109,7 @@ function line(year: number, ms: number) {
     String(grass).padStart(6),
     String(forest).padStart(6),
     String(river?.size ?? 0).padStart(6),
-    String(scars).padStart(6),
+    String(slides).padStart(6),
     (ground / 1e6).toFixed(3).padStart(9),
     ms > 0 ? ms.toFixed(1).padStart(5) : "    -",
   ];
@@ -111,7 +119,7 @@ function line(year: number, ms: number) {
 console.log(`seed ${SEED}, rules v${RULE_VERSION}, ${YEARS} years of ${DAYS} days, reported every ${EVERY}`);
 console.log([
   " year", "basins", " lakes", " ponded", " damp", " sat", " fall", " soil", " veg",
-  " grass", "forest", " river", " scars", "   ground", "ms/t",
+  " grass", "forest", " river", "slides", "   ground", "ms/t",
 ].join(" "));
 line(0, 0);
 let spent = 0, ticked = 0;

@@ -458,9 +458,10 @@ const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
 //
 // This is the one rule in the world that can make a closed basin. Everything
 // else grades the land down — sediment fills pits, creep rounds them off, and
-// tectonics is excluded from the tick by design — so the 246 depressions
-// worldgen leaves are a gift the world spends: 170 left by year ten, 61 by
-// year 120, and no standing water at all by then.
+// tectonics is excluded from the tick by design. Before this rule the 246
+// depressions worldgen leaves were a gift the world spent: 170 left by year
+// ten, 25 by year two hundred, and a single cell of standing water. With it
+// the count holds above three hundred instead.
 //
 // Written from the channel rather than from the hillside, which is the whole
 // of what makes it work. Asked the obvious way round — take the steepest
@@ -496,8 +497,10 @@ const SHED = 1;           // the face fails to the level of the channel below it
                           // so every dam of that size went in the pass that
                           // built it and the basin count moved by three in
                           // thirty years
-const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days, so a wet
-                          // slope over a stream fails about once a decade
+const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
+                          // that stayed wet would go inside two years, but the
+                          // wet precondition is itself intermittent, and the
+                          // continent as a whole sheds a few hundred a year
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
 export function slump(w: World) {
@@ -527,7 +530,12 @@ export function slump(w: World) {
     // slide that ran as it was found would bury a channel that a later cell
     // was still measuring itself against, so what failed would depend on
     // which way the scan happened to be going.
-    slides.push(face, i, (top - here) / SHED / 100 | 0);
+    // Measured on the rock, not on the surface. The loose soil goes as well as
+    // the rock, so taking the whole surface difference in bedrock and then
+    // sending the soil after it cuts the face past the channel by exactly its
+    // own soil depth — it fails *to* the level below it, not through it.
+    const rock = ((elev[face] - elev[i]) / SHED) | 0;
+    slides.push(face, i, rock > 0 ? rock : 0);
   }
   for (let k = 0; k < slides.length; k += 3) {
     const face = slides[k], dam = slides[k + 1];
@@ -537,10 +545,12 @@ export function slump(w: World) {
     // stand the ground on its head: a face no longer above its channel has
     // nothing left to give it.
     if (elev[face] * 100 + soil[face] <= elev[dam] * 100 + soil[dam]) continue;
-    // Only what fits, in both units. What will not fit stays on the face
-    // rather than being quietly destroyed — the ground has to balance.
-    if (rock > 32767 - elev[dam]) rock = 32767 - elev[dam];
-    if (rock > elev[face] + 32768) rock = elev[face] + 32768;
+    // Only what fits. What will not fit stays on the face rather than being
+    // quietly destroyed — the ground has to balance. Soil needs the guard;
+    // rock does not, and a clamp on it would be dead code dressed as caution:
+    // the amount is elev[face] - elev[dam], so the channel lands exactly where
+    // the face was and the face exactly where the channel was, both of which
+    // were representable a moment ago. Neither end can leave Int16.
     const loose = Math.min(soil[face], 65535 - soil[dam]);
     if (rock <= 0 && loose <= 0) continue;
     elev[face] -= rock;
