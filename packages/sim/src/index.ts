@@ -89,7 +89,13 @@ const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi 
 // and departing as it flickers across a threshold would bury everything real.
 
 export type EventKind = "fire" | "slide" | "sea";
-export type Event = { tick: number; kind: EventKind; x: number; y: number; size: number };
+export type Event =
+  { tick: number; rules: number; kind: EventKind; x: number; y: number; size: number };
+
+// The canonical list, exported so nothing downstream keeps its own copy of it.
+// A reader that filters by kind and a writer that adds one have to be able to
+// disagree loudly rather than quietly.
+export const EVENT_KINDS = ["fire", "slide", "sea"] as const satisfies readonly EventKind[];
 
 const happened: Event[] = [];
 const LOG_CAP = 4096;   // so a bench that never drains cannot grow without end
@@ -98,21 +104,23 @@ const LOG_CAP = 4096;   // so a bench that never drains cannot grow without end
 function note(w: World, kind: EventKind, at: number, size: number) {
   if (happened.length >= LOG_CAP) happened.splice(0, LOG_CAP / 4);
   const x = at < 0 ? -1 : at % SIZE, y = at < 0 ? -1 : (at / SIZE) | 0;
-  happened.push({ tick: w.tick, kind, x, y, size });
+  // The rules that are running, not `w.ruleVersion`, which is stamped at the end
+  // of the tick and so still says yesterday's on the first day under new ones.
+  // Old rows stay labelled with the rules of their era, which is the only way a
+  // log that outlives its own thresholds stays self-describing.
+  happened.push({ tick: w.tick, rules: RULE_VERSION, kind, x, y, size });
 }
 
 // The sea moves by the century, so it has no day of its own to be recorded on.
 // Noted when it crosses a five-metre mark instead, which is the coarsest thing
 // the world does and the only one that dates an era rather than an afternoon.
 //
-// A crossing is only a crossing if the day before it is known, so the mark is
-// read and not reported whenever the last stepped day was not yesterday's:
-// a world resumed from storage, or a different world entirely. The cost is at
-// most one missed crossing per restart, against the alternative of announcing
-// a tide that moved while nobody was running.
+// Yesterday is asked for rather than remembered. `sea` is a pure function of
+// the day and the seed, so there is nothing here to keep between ticks and
+// nothing a restart can lose: a world resumed from storage works out the mark
+// it was standing on the same way a world that never stopped does.
 const MARK = 5000;   // millimetres between one notch and the next
-let notch = 0;
-let notchAt: number | undefined;
+const notchOf = (level: number) => Math.trunc(level / MARK);   // symmetric about zero
 
 /**
  * What the world has done since this was last asked, oldest first. Drained:
@@ -814,10 +822,10 @@ export function step(w: World): void {
   // rain, then evaporation. Vegetation holds moisture back.
   const wet = weather(w.tick, w.seed);
   const level = sea(w.tick, w.seed);
-  const here = Math.trunc(level / MARK);   // trunc, so the notches are symmetric about zero
-  if (notchAt === w.tick - 1 && here !== notch) note(w, "sea", -1, (level / 1000) | 0);
-  notch = here;
-  notchAt = w.tick;
+  // Day one has no yesterday to have crossed anything from.
+  if (w.tick > 0 && notchOf(level) !== notchOf(sea(w.tick - 1, w.seed))) {
+    note(w, "sea", -1, (level / 1000) | 0);
+  }
   const slide = fronts(w);
   for (let i = 0; i < CELLS; i++) {
     if (elev[i] * 100 + soil[i] > level) {

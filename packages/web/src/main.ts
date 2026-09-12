@@ -127,12 +127,17 @@ const dateOf = (tick: number) => `year ${(tick / 365 | 0) + 1}`;
 // different things, and a padded number under a heading that fits none of them
 // says less than the plain words do.
 function line(e: Event): string {
-  if (e.kind === "fire") return `fire took ${e.size} cells`;
-  // Metres of rock dropped into the river that undercut the slope. It is the
-  // one thing in this world that makes a lake, so it is worth saying plainly.
-  if (e.kind === "slide") return `a slope fell ${e.size}m into the river`;
-  const m = Math.abs(e.size);
-  return `the sea stands ${m}m ${e.size < 0 ? "low" : "high"}`;
+  switch (e.kind) {
+    case "fire": return `fire took ${e.size} cells`;
+    // Metres of rock dropped into the river that undercut the slope. Worldgen's
+    // own hollows hold most of the world's water; what this rule alone can do is
+    // dam a river, which is the only way a new basin is ever made.
+    case "slide": return `a slope fell ${e.size}m into the river`;
+    case "sea": return `the sea stands ${Math.abs(e.size)}m ${e.size < 0 ? "low" : "high"}`;
+    // A kind with no sentence of its own must not quietly borrow the last one:
+    // a row that says the wrong thing is worse than a row that fails to build.
+    default: return e.kind satisfies never;
+  }
 }
 
 function paintPast() {
@@ -225,7 +230,7 @@ function paintClock() {
     : left > 0 ? `next in ${Math.ceil(left / 1000)}s`
     : "any moment";
   clock.textContent = world
-    ? `year ${(world.tick / 365 | 0) + 1}, day ${(world.tick % 365) + 1} · ${status}`
+    ? `${dateOf(world.tick)}, day ${(world.tick % 365) + 1} · ${status}`
     : status;
 }
 setInterval(paintClock, 250);
@@ -238,6 +243,15 @@ function mark(f: { x: number; y: number }, side: number) {
   const mx = Math.min(Math.max(f.x, edge), SIZE - 1 - edge);
   const my = Math.min(Math.max(f.y, edge), SIZE - 1 - edge);
   ctx.strokeRect(mx + 0.5 - r, my + 0.5 - r, side, side);
+}
+
+// This one, and not the others. Two rings rather than one thick one, so the
+// thing under them is still visible through the gap.
+function point(at: { x: number; y: number }, colour: string) {
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1;
+  mark(at, 10);
+  mark(at, 16);
 }
 
 function draw() {
@@ -264,16 +278,11 @@ function draw() {
     ctx.strokeStyle = "#e8ecf29a";
     ctx.lineWidth = 1;
     for (const f of found) mark(f, 4);
-    if (lit) { ctx.strokeStyle = "#ffffff"; mark(lit, 10); mark(lit, 16); }
+    if (lit) point(lit, "#ffffff");
   }
   // Drawn whether or not the rings are showing: this one was asked for by name,
   // and it is where something happened rather than one more thing on the map.
-  if (spot) {
-    ctx.strokeStyle = "#ffb45e";
-    ctx.lineWidth = 1;
-    mark(spot, 10);
-    mark(spot, 16);
-  }
+  if (spot) point(spot, "#ffb45e");
   paintClock();
   paintCell();
 }

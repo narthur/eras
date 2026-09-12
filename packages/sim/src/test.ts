@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, chronicle, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, chronicle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -126,14 +126,76 @@ const mature = () => {
   for (let i = 0; i < TICKS; i++) step(m);
   return m;
 };
+chronicle();   // the ordinary run above is not what this block is measuring
 const f = mature();
+const lit = chronicle();
 const burnt = [...f.veg].filter((v, i) => !submerged(f, i) && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
 assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
+
+// And the record has to agree with the ground. This is the only world in the
+// suite that catches fire, so it is the only place the fire half of the
+// chronicle can be asked anything at all.
+assert.ok(lit.length > 0, "a world that burned should say so");
+assert.ok(lit.every((e) => e.kind === "fire"), "and nothing else happens to a made-mature world in a year");
+// Not equality: the ground grows back. A cell burned in the spring is over the
+// 500 this counts by the end of the year, so what is still visibly bare is a
+// floor under what was reported, never a match for it.
+const took = lit.reduce((n, e) => n + e.size, 0);
+assert.ok(took >= burnt, `the fires reported ${took} cells and ${burnt} are still bare`);
+assert.ok(took < CELLS / 20, `fire must not take the continent, reported ${took}`);
+for (const e of lit) {
+  assert.ok(e.size > 0, "a strike that took nothing is weather, not an event");
+  assert.strictEqual(e.rules, RULE_VERSION, "stamped with the rules that ran it");
+  assert.ok(e.x >= 0 && e.x < SIZE && e.y >= 0 && e.y < SIZE, `fire at ${e.x},${e.y} is off the map`);
+  assert.ok(f.veg[e.y * SIZE + e.x] < 2000, "and it is filed where the ground actually burned");
+}
 // This is the only world here that catches fire, so the determinism check has
 // to be made again on it, or the one rule in the tick that draws on chance
 // goes unwatched. Swapping the seeded hash for Math.random fails this line.
 same(pack(mature()), pack(f), "a world that burns must burn the same way twice");
+assert.deepStrictEqual(chronicle(), lit, "and it must be written down the same way twice");
+
+// The sea crossing a mark. It moves by the century, so a run that waited for one
+// would cost minutes; but `sea()` is pure in the tick and the seed, so the day
+// it happens can be found by arithmetic and the world set down on the eve of it.
+const MARK = 5000;   // must match the sim's own, or this test asks about nothing
+const notchOf = (t: number, seed: number) => Math.trunc(sea(t, seed) / MARK);
+let crossing = -1;
+for (let t = 1; t < 365 * 400 && crossing < 0; t++) {
+  if (notchOf(t, 1234) !== notchOf(t - 1, 1234)) crossing = t;
+}
+assert.ok(crossing > 0, "four centuries of this seed should move the sea five metres");
+chronicle();
+const tide = generate(1234);
+// Two steps: the first is the eve, and it is what a world resumed from storage
+// has never had — a yesterday. The second is the day the sea changes mark.
+tide.tick = crossing - 1;
+step(tide);          // the eve: nothing to compare against yet, so it says nothing
+step(tide);          // and this is the day itself
+const turned = chronicle().filter((e) => e.kind === "sea");
+assert.strictEqual(turned.length, 1, `one crossing at tick ${crossing}, got ${turned.length}`);
+assert.strictEqual(turned[0].tick, crossing, "dated the day it crossed");
+assert.strictEqual(turned[0].x, -1, "the sea happens everywhere, so it points nowhere");
+assert.strictEqual(turned[0].y, -1, "and its y says so too");
+assert.strictEqual(turned[0].size, (sea(crossing, 1234) / 1000) | 0, "in metres against the datum");
+// And a world that has only just been picked up off the disk still catches it.
+// This is the whole point of asking `sea` for yesterday instead of remembering
+// it: a restart used to cost the first crossing after it, silently.
+chronicle();
+const resumed = generate(1234);
+resumed.tick = crossing;
+step(resumed);
+assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), turned,
+  "a world resumed on the day must report the crossing the same as one that ran into it");
+
+// And an ordinary day after it says nothing at all — two steps, so the second
+// of them is a day with a known yesterday rather than one that only primes.
+tide.tick = crossing + 5;
+step(tide);
+step(tide);
+assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), [],
+  "a day that crosses no mark is not an event");
 
 // Slope failure, asked directly. It is the only rule that can make a closed
 // basin, so it is the only one holding the continent's lakes open past the

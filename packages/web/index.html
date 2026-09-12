@@ -13,25 +13,20 @@
            padding: 3px 9px; cursor: pointer; }
   button[aria-pressed="true"] { background: #3d4450; color: #fff; }
   main { flex: 1; min-height: 0; position: relative; }
-  /* Columns are padded to a fixed width, so a value changing length moves
-     nothing but itself. pointer-events: none keeps it out of its own way. */
-  /* The box is let through like the readout above it; only the rows themselves
-     take the pointer, so the panel never becomes a dead patch of map. */
-  #found { position: absolute; bottom: 12px; left: 12px; margin: 0;
-           white-space: pre; color: #8b93a1; pointer-events: none;
-           background: #000000a6; padding: 6px 8px; line-height: 1.5; }
-  #found div[data-at] { cursor: default; pointer-events: auto; }
-  #found div[data-at]:hover { color: #f0f3f7; background: #2b313b; }
-  /* Bottom right, opposite the feature list: what the world is and what it
-     did, one in each lower corner, neither over the other. */
-  #past { position: absolute; bottom: 12px; right: 12px; margin: 0;
-          white-space: pre; color: #8b93a1; pointer-events: none;
+  /* Three readouts, one look. Columns are padded to a fixed width, so a value
+     changing length moves nothing but itself, and each id says only which
+     corner it sits in. #found and #past take the two lower ones: what the
+     world is and what it did, neither over the other. */
+  #cell, #found, #past { position: absolute; margin: 0; white-space: pre;
+          color: #8b93a1; pointer-events: none;
           background: #000000a6; padding: 6px 8px; line-height: 1.5; }
-  #past div[data-at] { cursor: default; pointer-events: auto; }
-  #past div[data-at]:hover { color: #f0f3f7; background: #2b313b; }
-  #cell { position: absolute; top: 12px; left: 12px; margin: 0;
-          white-space: pre; color: #8b93a1; pointer-events: none;
-          background: #000000a6; padding: 6px 8px; line-height: 1.5; }
+  #cell { top: 12px; left: 12px; }
+  #found { bottom: 12px; left: 12px; }
+  #past { bottom: 12px; right: 12px; }
+  /* The boxes are let through; only the rows that point at something take the
+     pointer, so a panel never becomes a dead patch of map. */
+  #found div[data-at], #past div[data-at] { cursor: default; pointer-events: auto; }
+  #found div[data-at]:hover, #past div[data-at]:hover { color: #f0f3f7; background: #2b313b; }
   canvas { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px);
            object-fit: contain; image-rendering: pixelated; cursor: crosshair; }
 </style>

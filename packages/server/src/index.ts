@@ -1,16 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
-import { chronicle, features, generate, step, pack, unpack, type Event, type Feature, type World } from "@eras/sim";
+import { chronicle, features, generate, step, pack, unpack, EVENT_KINDS, type Event, type Feature, type World } from "@eras/sim";
 
 const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
 const MAX_SPECTATORS = 100;   // each one is another ~704KiB down the wire per tick
 const FEATURE_EVERY = 30;    // world-days between sweeps; a forest takes decades
-const KINDS = ["fire", "slide", "sea"] as const;
 const RECENT = 4;   // chronicle lines per kind a viewer is sent. The rest stay in the
                     // table. Per kind rather than a flat tail for the same reason the
                     // feature list is: the world does one of these far more often than
                     // the others, and a plain "last twelve" is a list of landslides
-                    // with the fire that happened last year already off the end of it
+                    // with the fire that happened last year already off the end of it.
+                    // EVENT_KINDS comes from the sim so that adding a kind cannot
+                    // quietly leave it stored but never shown
 
 // One world-day per real minute. Override to run the world fast while tuning rules:
 //   wrangler dev --var TICK_MS:50
@@ -22,6 +23,7 @@ export class WorldDO extends DurableObject<Env> {
   private found: Feature[] = [];
   private foundAt = -FEATURE_EVERY;   // so the first sweep runs immediately
   private recent?: Event[];           // the tail of the chronicle, read once and then kept
+  private pending: Event[] = [];      // drained from the sim, not yet durable
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -29,9 +31,22 @@ export class WorldDO extends DurableObject<Env> {
     // it is a table rather than another key beside the world: a row per thing
     // that happened, kept for as long as the world lasts. `sql.exec` is
     // synchronous, so this needs no blockConcurrencyWhile to be ready in time.
-    this.ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS chronicle" +
-      " (tick INTEGER, kind TEXT, x INTEGER, y INTEGER, size INTEGER)");
+    //
+    // Never pruned, and that is affordable: world time runs 1440x real time, so
+    // at four slides and a few fires a world-year the table gains about ten
+    // thousand rows a real year — single-digit megabytes after a decade, against
+    // gigabytes of room. The world is supposed to remember, so it does.
+    const sql = this.ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS chronicle" +
+      " (tick INTEGER, rules INTEGER, kind TEXT, x INTEGER, y INTEGER, size INTEGER)");
+    // Every read of this table is "the last few of one kind", and the table only
+    // ever grows. Without this the tail queries scan all of it, which costs
+    // nothing this year and more every year after; with it they read RECENT rows
+    // and the table's size stops being a number anyone has to keep watching.
+    // On (kind, tick) and not on rowid with them: SQLite will not index rowid,
+    // and it does not need to — this narrows each tail to the right kind's last
+    // few days, and the rowid tiebreak below sorts what is left of one day.
+    sql.exec("CREATE INDEX IF NOT EXISTS chronicle_tail ON chronicle (kind, tick DESC)");
   }
 
   private get tickMs() {
@@ -75,25 +90,36 @@ export class WorldDO extends DurableObject<Env> {
   // Everything the ticks just run wrote down, oldest first. Drained from the
   // sim whether or not anyone is watching: an event nobody takes is an event
   // the world forgets, and the point of the chronicle is that it does not.
+  //
+  // Held in a field until the rows are in, because the drain is destructive and
+  // the write can fail. A throw rolls this handler's storage back, and the
+  // world in memory has already moved past the ticks that made these, so
+  // nothing would ever make them again — the same reason `load()` refuses to
+  // regenerate a world it cannot read. Whatever did not land stays queued and
+  // goes in on the next alarm; the rollback means it cannot go in twice.
   private record(): boolean {
-    const events = chronicle();
+    this.pending.push(...chronicle());
     const sql = this.ctx.storage.sql;
-    for (const e of events) {
-      sql.exec("INSERT INTO chronicle VALUES (?, ?, ?, ?, ?)", e.tick, e.kind, e.x, e.y, e.size);
+    for (const e of this.pending) {
+      sql.exec("INSERT INTO chronicle VALUES (?, ?, ?, ?, ?, ?)",
+        e.tick, e.rules, e.kind, e.x, e.y, e.size);
     }
-    if (events.length === 0 && this.recent) return false;
+    const wrote = this.pending.length > 0;
+    this.pending = [];   // reached only once every row of it is in
+    if (!wrote && this.recent) return false;
     // Read back rather than appended to in memory, so the tail a viewer sees is
     // the tail that is actually stored and there is one answer to what happened.
     // One query a kind: three small reads beat one window function that has to
     // be decoded before anyone can say what it returns.
     const tail: Event[] = [];
-    for (const kind of KINDS) {
+    for (const kind of EVENT_KINDS) {
       tail.push(...sql.exec<Event>(
-        "SELECT tick, kind, x, y, size FROM chronicle WHERE kind = ?" +
+        "SELECT tick, rules, kind, x, y, size FROM chronicle WHERE kind = ?" +
         " ORDER BY tick DESC, rowid DESC LIMIT ?", kind, RECENT).toArray());
     }
+    // Newest first, which is the order the panel reads in.
     this.recent = tail.sort((a, b) => b.tick - a.tick);
-    return events.length > 0;
+    return wrote;
   }
 
   // What the world has made that is big enough to have a name. Swept on a
