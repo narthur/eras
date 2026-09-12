@@ -18,7 +18,10 @@
 export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
-export const RULE_VERSION = 8;
+const STORMS = 8;  // days between storms over a given patch of country
+const OPEN = 2;   // millimetres a day off the surface of standing water, about
+                  // 700mm a year, which is what a temperate pond loses
+export const RULE_VERSION = 9;
 
 export type World = {
   seed: number;
@@ -215,8 +218,14 @@ const WET_LOW = 80, WET_HIGH = 145;    // percent of what the map says
  * to ask it, not to run a century of weather past it and read the tea leaves.
  */
 export function carry(falls: number, soil: number, damp: number): number {
+  // The drought term pivots where it does because that is where the land
+  // actually sits: with the water balance corrected, soil moisture runs from a
+  // quarter of capacity on the ridges to the brim in the valley floors, median
+  // a little over 40%. Pivoting at 60%, as it did while every cell stood
+  // saturated, would make drought the binding limit nearly everywhere and
+  // there would be no forest outside a valley bottom.
   return Math.min(clamp((falls - 85) * 110, 0, VEG_MAX), soil * 6,
-                  damp >= 60 ? VEG_MAX : damp * 160);
+                  damp >= 45 ? VEG_MAX : damp * 222);
 }
 
 /** How fast a cell that can carry this much fills in, in a day. */
@@ -596,9 +605,42 @@ export function step(w: World): void {
   const level = sea(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
     if (elev[i] * 100 + soil[i] > level) {
-      water[i] = Math.min(65535, water[i] + ((((rain[i] * wet) / 100) | 0) >> 3));
-      const loss = (water[i] * (120 - ((veg[i] * 60) / VEG_MAX | 0))) / 1000 | 0;
-      water[i] = Math.max(0, water[i] - loss);
+      // A sixteenth of the day's rainfall weight reaches the ground as water,
+      // about 3 metres a year on the median cell, where an eighth was seven
+      // metres — wetter than any rainforest — and
+      // — the part that showed — evaporation takes 12% of the store a day, so
+      // the store settled at eight times the daily input, above what the soil
+      // can hold. Every cell that was not desert therefore stood brim full with
+      // the surplus running off, and the damp reading was 100% over seven
+      // eighths of the land. Now the store settles below the brim and follows
+      // the rain and the ground it sits on: ridges and rain shadows dry, valley
+      // floors wet because what falls upslope arrives in them.
+      //
+      // And it arrives in storms rather than as a daily drizzle. That is not
+      // decoration: soil below field capacity soaks up an average day entirely,
+      // so a world watered evenly never spills, and a world that never spills
+      // has no runoff, no standing water and no lakes in it, however much rain
+      // falls. A storm lands eight days' worth at once, the soil takes what it
+      // can hold and the rest runs off — which is how a landscape can be half
+      // dry and still have rivers in it. Drawn for a patch of country rather
+      // than a cell, because weather arrives as fronts.
+      const day = (((rain[i] * wet) / 100) | 0) >> 4;
+      const patch = ((i % SIZE) >> 3) + (((i / SIZE) | 0) >> 3) * 67;
+      if (hash2(patch, w.tick, w.seed + 7717) < 1 / STORMS) {
+        water[i] = Math.min(65535, water[i] + day * STORMS);
+      }
+      // Two different things dry out at two different rates. Water held in the
+      // soil goes as a share of what is there, faster where there is no canopy
+      // over it. Water standing on the surface goes as a depth, a few
+      // millimetres a day off the top, the way a pond does — taken as a share
+      // of the whole store instead, a lake a metre deep lost 160mm a day,
+      // fifty-eight metres a year, and no pit on the continent could hold
+      // water long enough to become one.
+      const cap = soil[i] >> 3;
+      const stored = water[i] < cap ? water[i] : cap;
+      const standing = water[i] - stored;
+      const dries = (stored * (160 - ((veg[i] * 80) / VEG_MAX | 0))) / 1000 | 0;
+      water[i] = Math.max(0, water[i] - dries - (standing < OPEN ? standing : OPEN));
     }
     height[i] = elev[i] * 100 + soil[i] + water[i];
     order[i] = i;
@@ -693,7 +735,10 @@ export const Biome = { Ocean: 0, Lake: 1, River: 2, Rock: 3, Barren: 4, Grass: 5
 
 export function biome(w: World, i: number): number {
   if (submerged(w, i)) return Biome.Ocean;
-  if (w.water[i] - (w.soil[i] >> 3) > 1200) return Biome.Lake;
+  // 600mm standing over the soil rather than 1200: the old figure was set
+  // when the median cell took seven metres of rain a year and a pit could
+  // hold a metre and a half of water against the sky.
+  if (w.water[i] - (w.soil[i] >> 3) > 600) return Biome.Lake;
   if (w.flow[i] > 200) return Biome.River;
   if (w.elev[i] > 1800) return Biome.Peak;
   if (w.veg[i] > 6000) return Biome.Forest;

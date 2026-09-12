@@ -68,6 +68,31 @@ const grown = new Set<number>();
 for (let i = 0; i < CELLS; i++) if (!submerged(a, i) && a.veg[i] > 0) grown.add(a.veg[i]);
 assert.ok(grown.size > 8, `a year should leave the land uneven, ${grown.size} levels`);
 
+// Soil moisture has to be a reading and not a constant. It stood at 100% over
+// seven eighths of the land once, because the daily rain settled the store
+// above what the soil could hold, so every cell that was not desert stood brim
+// full. Two halves to that: the day's rain is smaller now, and it arrives in
+// storms — a store below capacity soaks up an average day whole and never
+// spills, which is why a world watered evenly has no runoff in it at all.
+const damp: number[] = [];
+let standing = 0, pools = 0;
+for (let i = 0; i < CELLS; i++) {
+  if (submerged(a, i)) continue;
+  const root = Math.min(a.soil[i], 1200) >> 3;
+  if (root > 0) damp.push((a.water[i] * 100) / root | 0);
+  const over = a.water[i] - (a.soil[i] >> 3);
+  if (over > 0) standing++;
+  if (over > 600) pools++;
+}
+damp.sort((p, q) => p - q);
+const soaked = damp.filter((v) => v >= 100).length / damp.length;
+assert.ok(damp[damp.length >> 1] < 85, `the median cell should not be brim full: ${damp[damp.length >> 1]}%`);
+assert.ok(soaked < 0.4, `too much of the land is saturated: ${(soaked * 100).toFixed(0)}%`);
+// and the other half of it: rain that arrives all at once has to run off, or
+// there is nothing standing anywhere and the world has no lakes
+assert.ok(standing > 100, `rain should run off somewhere, ${standing} cells hold any`);
+assert.ok(pools > 20, `and collect into lakes, ${pools} cells deep enough`);
+
 // Rain comes off the shape of the land, not out of a noise field: air that has
 // been climbing for the last few cells gives up more of what it carries, and
 // the ground beyond the ridge gets what is left. Measured against the six
