@@ -262,8 +262,14 @@ const height = new Int32Array(CELLS);
 // Fire is the only thing that happens to a world that has finished growing.
 // Without it the map is done the day the last cell matures; with it the land
 // keeps a patchwork of ages, because a burn grows back at its own cell's rate.
-const FIRE_ODDS = 0.0000005;   // per dry canopy cell per day, a few fires a year
-const BURN_CAP = 500;          // cells, so no one fire takes the continent
+// Measured on seed 20260910 over sixty years, once the chronicle could be read:
+// thirteen fires, the first in year fifteen — about one every five years, not
+// the few a year this used to claim. And twelve of the thirteen burnt exactly
+// BURN_CAP cells, so the cap is not the guard it was written as; it is the
+// rule that decides how big a fire is. Both left as they stand for now: the
+// fire rule is untouched by the work that measured it.
+const FIRE_ODDS = 0.0000005;   // per dry canopy cell per day
+const BURN_CAP = 500;          // cells. Binding on 92% of fires, see above
 const front = new Int32Array(BURN_CAP * 8);   // the edge of the fire
 const fires: number[] = [];
 
