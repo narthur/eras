@@ -141,8 +141,18 @@ function line(e: Event): string {
 }
 
 function paintPast() {
-  pastEl.hidden = past.length === 0;
   pastEl.textContent = "";
+  // Shown from the first frame on, empty or not, unlike the feature list. A
+  // world that has only just started keeping a record stays empty for hours,
+  // and a panel that hides itself through all of them is indistinguishable
+  // from one that is broken — which is how the first person to look at it read
+  // the silence. It still starts hidden in the markup, because before the
+  // socket answers there is nothing to be silent about.
+  pastEl.hidden = false;
+  if (past.length === 0) {
+    pastEl.append(row("nothing written down yet"));
+    return;
+  }
   for (const e of past) {
     const el = row(`${dateOf(e.tick).padEnd(10)}${line(e)}`);
     // The same pointing the feature list does: a coordinate is no way to find
