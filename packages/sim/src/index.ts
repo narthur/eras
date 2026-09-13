@@ -60,7 +60,7 @@ function falling(i: number, slide: number): number {
 }
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
                   // 700mm a year, which is what a temperate pond loses
-export const RULE_VERSION = 10;
+export const RULE_VERSION = 11;
 
 export type World = {
   seed: number;
@@ -161,6 +161,64 @@ export function sea(tick: number, seed: number): number {
   return seaIs;
 }
 
+// Where the sea has got to: under its level, and joined to the edge of the map
+// by water all the way. Being low is not enough and never was — a hollow walled
+// off by higher ground is a hollow, not an arm of the sea, however deep it
+// lies. Measured on the live world: at an ordinary tide this is four cells in
+// thirty-five thousand and reads as a rounding error, but the sea swings thirty
+// metres and when it falls the sill at a bay's mouth comes up dry. At year 155
+// of seed 20260910 that cut a bay of five hundred and thirty-three cells off
+// from the ocean in a single step, which the height test went on calling ocean:
+// a Caspian, labelled and filled as though it were still open water.
+//
+// Eight-connected, because water runs to any of the eight neighbours — the same
+// reason a river is traced that way. Drawn at most twice in a day and cached in
+// between, so nothing in a tick depends on how far through the tick it is
+// asked: once for the rain, which reads the land as it stood at dawn, and again
+// after creep and slope failure have moved it, because those are the only rules
+// that move ground and the flood surface is taken after them too.
+//
+// ponytail: a fill over every cell, every day, for 8.6% of the tick. The
+// coastline is a slow fact like `flow` is, so this could ride the drain pass
+// every 64 days instead and cost a sixty-fourth of that — at the price of a
+// mask up to 64 days stale, and of a second rule about when it is valid. Worth
+// it when the tick rate or the burst size makes 8.6% hurt, and not before.
+const reached = new Uint8Array(CELLS);
+const shore = new Int32Array(CELLS);
+let chartOf: World | undefined;   // by identity: two worlds can share a tick
+let chartAt = -1;                 // and a seed and not share a coastline
+
+function chart(w: World) {
+  const level = sea(w.tick, w.seed);
+  const under = (i: number) => w.elev[i] * 100 + w.soil[i] <= level;
+  reached.fill(0);
+  let head = 0, tail = 0;
+  // The rim of the map is open sea wherever it is under the water. Worldgen
+  // forces the border to the floor, so in practice the whole rim qualifies.
+  for (let x = 0; x < SIZE; x++) {
+    for (const i of [x, x + (SIZE - 1) * SIZE, x * SIZE, x * SIZE + SIZE - 1]) {
+      if (!reached[i] && under(i)) { reached[i] = 1; shore[tail++] = i; }
+    }
+  }
+  // Neighbours inlined rather than walked with the generator. This runs over
+  // every cell of every day, and the generator alone cost a third of the tick.
+  while (head < tail) {
+    const i = shore[head++];
+    const x = i % SIZE, y = (i / SIZE) | 0;
+    const x0 = x > 0 ? -1 : 0, x1 = x < SIZE - 1 ? 1 : 0;
+    const y0 = y > 0 ? -SIZE : 0, y1 = y < SIZE - 1 ? SIZE : 0;
+    for (let dy = y0; dy <= y1; dy += SIZE) {
+      for (let dx = x0; dx <= x1; dx++) {
+        const j = i + dy + dx;
+        if (j === i || reached[j]) continue;
+        if (w.elev[j] * 100 + w.soil[j] <= level) { reached[j] = 1; shore[tail++] = j; }
+      }
+    }
+  }
+  chartOf = w;
+  chartAt = w.tick;
+}
+
 /**
  * Whether the sea stands over a cell. Bedrock below the datum is not the same
  * question: a river that fills its own mouth with silt builds ground that the
@@ -168,8 +226,10 @@ export function sea(tick: number, seed: number): number {
  * cells around the shore to begin with, where the weathered soil already
  * stands above the water.
  */
-export const submerged = (w: World, i: number) =>
-  w.elev[i] * 100 + w.soil[i] <= sea(w.tick, w.seed);
+export function submerged(w: World, i: number): boolean {
+  if (chartOf !== w || chartAt !== w.tick) chart(w);
+  return reached[i] === 1;
+}
 
 // ---- worldgen -------------------------------------------------------------
 // ponytail: floats here, but only + - * / which are exact per IEEE754, so this
@@ -577,12 +637,11 @@ const slides: number[] = [];   // face, channel and rock, decided before any of 
 
 export function slump(w: World) {
   const { elev, soil, water, veg, flow } = w;
-  const level = sea(w.tick, w.seed);
   slides.length = 0;
   for (let i = 0; i < CELLS; i++) {
     if (flow[i] <= DAMS) continue;
     const here = elev[i] * 100 + soil[i];
-    if (here <= level) continue;
+    if (submerged(w, i)) continue;
     // The highest slope standing over this reach, and it has to be wet. Ground
     // holding all it can is ground with no friction left, which is why real
     // slopes fail in the wet and not in the drought — and it ties the one rule
@@ -654,7 +713,7 @@ function crawl(w: World) {
   for (let i = 0; i < CELLS; i++) {
     const have = was[i];
     const here = elev[i] * 100 + have;
-    if (have === 0 || here <= level) continue;
+    if (have === 0 || submerged(w, i)) continue;
     let n = 0, demand = 0;
     for (const j of neighbours(i)) {
       // A neighbour under the sea is the shoreline, not its own bed: soil that
@@ -663,7 +722,12 @@ function crawl(w: World) {
       // the other way, the drop into deep water sets the rate all round the
       // coast and the continent wears a ring of bare rock.
       const there = elev[j] * 100 + was[j];
-      let fall = here - (there > level ? there : level);
+      // Soil that creeps to the water's edge is gone, and the sea's surface is
+      // the floor under that — but only where the sea is. Into a dry hollow the
+      // hillside sheds onto the hollow's own floor, however far below the
+      // datum that floor happens to lie.
+      const floor = submerged(w, j) ? level : there;
+      let fall = here - (floor > there ? floor : there);
       if (fall <= 0) continue;
       // And past sixty metres in one cell it is a face rather than a hillside.
       // Left proportional, the steepest ground sheds soil faster than bedrock
@@ -699,6 +763,13 @@ function drain(w: World) {
   winds(w);        // where the rain falls, given the shape of the land today
   crawl(w);        // before the flood, so it fills the surface creep just made
   slump(w);        // and before it too, so a new dam ponds on the pass it forms
+  // Those two are the only things in a day that move the ground, and slump is
+  // the one rule that can seal a channel. So the coastline is redrawn here, on
+  // the ground as it now stands: the loop below takes each cell's height live
+  // and its sea-or-not from the chart, and reading one from after the slide and
+  // the other from before it is how a bay that was dammed this morning gets
+  // seeded into the flood as open sea at the height of its own new dam.
+  chartAt = -1;
   flow.fill(0);
   load.fill(0);   // nothing is in transit between passes, so a restart is clean
   heapN = 0;
@@ -834,7 +905,7 @@ export function step(w: World): void {
   }
   const slide = fronts(w);
   for (let i = 0; i < CELLS; i++) {
-    if (elev[i] * 100 + soil[i] > level) {
+    if (!submerged(w, i)) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
       // about 3 metres a year on the median cell, where an eighth was seven
       // metres — wetter than any rainforest — and
@@ -902,8 +973,13 @@ export function step(w: World): void {
   }
 
   for (let i = 0; i < CELLS; i++) {
-    // the sea is a sink: it refills to its own level and swallows what arrives
-    if (elev[i] * 100 + soil[i] <= level) {
+    // The sea is a sink: it refills to its own level and swallows what arrives.
+    // Only where it has actually reached, though — filling every low cell put
+    // water into hollows nothing could have carried it to, and conjured it
+    // besides, since this is an assignment and not a transfer. A basin walled
+    // off below sea level now takes rain like any other basin and ponds by the
+    // same rules, which is what a Caspian is.
+    if (submerged(w, i)) {
       water[i] = Math.max(0, level - (elev[i] * 100 + soil[i]));
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
