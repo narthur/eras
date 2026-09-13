@@ -32,8 +32,9 @@ export type Vitals = {
                        // give. 1 is indistinguishable from noise, below 1 is
                        // clumped, above 1 is spread out more evenly than chance
   edgeRaw: number;     // the same before that division, 0..4, for reading by eye
-  mingle: number;      // how often neighbouring land shares a biome, against
-                       // chance. Above 1 is country, 1 is static
+  mingle: number;      // how much of the way from chance to perfectly zoned the
+                       // map is. 0 is static — every cell drawn on its own — and
+                       // 1 is a world where no two unlike things ever touch
   patches: number;     // how many separate woods there are
   biggest: number;     // share of all forest sitting in the largest one, 0..1
   river: number;       // the longest reach
@@ -123,7 +124,9 @@ export function vitals(w: World, year: number, was: Int16Array): Vitals {
   // fragmentation, which is exactly the comparison this exists to make. A
   // scattered cell has four unlike neighbours less the chance each is forest,
   // so the null is 4(1-p) — checked against an actual shuffle of the mask at
-  // 7.6% cover, which gave 3.71 against the formula's 3.69.
+  // 7.64% cover, which gave 3.71 against the formula's 3.69. Two decimals on
+  // the cover because one is not enough to reproduce the third figure: at a
+  // round 7.6% the formula reads 3.70.
   const p = land > 0 ? forest / land : 0;
   const scattered = 4 * (1 - p);
 
@@ -146,6 +149,12 @@ export function vitals(w: World, year: number, was: Int16Array): Vitals {
     }
   }
   const chance = seen.reduce((n, c) => n + (c / land) ** 2, 0);
+  // Not `alike / pairs / chance`. That ratio's own ceiling is 1/chance, so a
+  // world where one biome dominates cannot score highly however well arranged
+  // it is — the same mistake as measuring the woods against a flat four, made
+  // again one field lower. This is the share of the distance from chance to
+  // perfectly zoned, which is bounded at 1 whatever the biome balance, and goes
+  // negative for a map stirred more finely than chance would stir it.
 
   // Every wood, not only the ones big enough to be worth a name.
   const woods = features(w, { ...FEATURE_MIN, forest: 1 })
@@ -175,7 +184,7 @@ export function vitals(w: World, year: number, was: Int16Array): Vitals {
     forest,
     edge: forest > 0 && scattered > 0 ? boundary / forest / scattered : 1,
     edgeRaw: forest > 0 ? boundary / forest : 0,
-    mingle: pairs > 0 && chance > 0 ? alike / pairs / chance : 1,
+    mingle: pairs > 0 && chance < 1 ? (alike / pairs - chance) / (1 - chance) : 0,
     patches: woods.length,
     biggest: forest > 0 ? largest / forest : 0,
     river: river?.size ?? 0,

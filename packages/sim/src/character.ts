@@ -10,6 +10,10 @@
 //   pnpm character                 three seeds, sixty years each
 //   pnpm character 120 3           two centuries of it, three seeds
 //
+// Deliberately not in CI. `pnpm test` is half a minute and gates every deploy;
+// this is a quarter of an hour and gates a judgement, which is a thing a person
+// does before changing a rule, not a thing a push does.
+//
 // Each invariant is a range, not a target. Inside the range there is nothing to
 // optimise toward and no corner to be driven into: a world that satisfies all
 // of them is acceptable, and one that satisfies them and still looks wrong is
@@ -153,10 +157,10 @@ const CHECKS: Check[] = [
   },
   {
     name: "the map is made of places",
-    of: "neighbouring land sharing a biome, against the chance of it",
-    lo: 1.5, hi: 100,
+    of: "how far from chance toward perfectly zoned, 0 to 1",
+    lo: 0.25, hi: 1,
     value: (r) => last(r).mingle,
-    why: "asked of every biome at once, because the area checks cannot see this. Grass and forest can stand in exactly the right proportion and be stirred through each other everywhere, and a map like that reads as static however good its histogram is. One is a world that drew each cell independently",
+    why: "asked of every biome at once, because the area checks cannot see this. Grass and forest can stand in exactly the right proportion and be stirred through each other everywhere, and a map like that reads as static however good its histogram is. Zero is a world that drew each cell independently; a developed continent measures 0.5 to 0.6. The first version divided by chance instead, and its own ceiling was then 1/chance — so a world where one biome ran to 85% could not have passed however well arranged it was, which is the mistake the clumping figure had made one field higher up. A world of a single biome scores near the top here and ought to: everything is alike. What is wrong with such a world is its histogram, and the check above is the one that reads that",
   },
   {
     name: "slopes fail",
@@ -229,7 +233,10 @@ for (const c of CHECKS) {
   // not passed.
   const out = got.filter(({ v }) => !Number.isFinite(v) || v < c.lo || v > c.hi);
   const mark = out.length === 0 ? "ok  " : c.known ? "known" : "FAIL";
-  if (out.length > 0) { (c.known ? expected++ : failed++); standing.push(c); }
+  if (out.length > 0) {
+    if (c.known) expected++; else failed++;
+    standing.push(c);
+  }
   const shown = got.map(({ v }) => (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0))).join(" ");
   rows.push(`${mark.padEnd(6)}${c.name.padEnd(38)}${shown.padStart(24)}   want ${c.lo}..${c.hi}`);
   if (out.length > 0 && out.length < runs.length) {
