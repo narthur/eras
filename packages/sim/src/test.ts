@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, chronicle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -128,22 +128,29 @@ const mature = () => {
 };
 chronicle();   // the ordinary run above is not what this block is measuring
 const f = mature();
-const lit = chronicle();
+// Fires only: a made-mature world still has rivers cutting slopes out from
+// under each other, so slides turn up here too.
+const lit = chronicle().filter((e) => e.kind === "fire");
 const burnt = [...f.veg].filter((v, i) => !submerged(f, i) && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
-assert.ok(burnt < CELLS / 20, `fire must not take the continent, burnt ${burnt}`);
+// A fifth, where this used to say a twentieth. The old figure was the cap's
+// shadow: every fire burnt exactly BURN_CAP, so a year's total was a multiple
+// of it and the bound could be tight. Fire is percolation now and this fixture
+// is the most flammable world there is — every cell closed dry canopy — so a
+// year of it taking a sixth of the continent is the rule working, not running
+// away. What must still hold is that a year of fire cannot clear the place.
+assert.ok(burnt < CELLS / 5, `fire must not take the continent, burnt ${burnt}`);
 
 // And the record has to agree with the ground. This is the only world in the
 // suite that catches fire, so it is the only place the fire half of the
 // chronicle can be asked anything at all.
 assert.ok(lit.length > 0, "a world that burned should say so");
-assert.ok(lit.every((e) => e.kind === "fire"), "and nothing else happens to a made-mature world in a year");
 // Not equality: the ground grows back. A cell burned in the spring is over the
 // 500 this counts by the end of the year, so what is still visibly bare is a
 // floor under what was reported, never a match for it.
 const took = lit.reduce((n, e) => n + e.size, 0);
 assert.ok(took >= burnt, `the fires reported ${took} cells and ${burnt} are still bare`);
-assert.ok(took < CELLS / 20, `fire must not take the continent, reported ${took}`);
+assert.ok(took < CELLS / 5, `fire must not take the continent, reported ${took}`);
 for (const e of lit) {
   assert.ok(e.size > 0, "a strike that took nothing is weather, not an event");
   assert.strictEqual(e.rules, RULE_VERSION, "stamped with the rules that ran it");
@@ -154,7 +161,31 @@ for (const e of lit) {
 // to be made again on it, or the one rule in the tick that draws on chance
 // goes unwatched. Swapping the seeded hash for Math.random fails this line.
 same(pack(mature()), pack(f), "a world that burns must burn the same way twice");
-assert.deepStrictEqual(chronicle(), lit, "and it must be written down the same way twice");
+assert.deepStrictEqual(chronicle().filter((e) => e.kind === "fire"), lit,
+  "and it must be written down the same way twice");
+
+// The regression the whole rule was rewritten for, asked by striking the same
+// world in different places. Spread used to be deterministic — every neighbour
+// with fuel caught — so a fire ate its entire connected fuel region, and that
+// region was ninety per cent of the continent: every fire came out at exactly
+// BURN_CAP and the cap was the rule rather than the backstop. If that ever
+// comes back these sizes all match again.
+//
+// Not asked of the year's own fires above, because this fixture is every cell
+// closed dry canopy and so far above the percolation threshold that it yields
+// one fire and that fire is capped. Which is right for such a world, and no use
+// for showing that size varies. `f` is free to be burnt now: the two checks
+// that needed it pristine have both been made.
+chronicle();
+const spots: number[] = [];
+for (let i = 0; i < CELLS && spots.length < 8; i += 977) if (f.veg[i] > 5000) spots.push(i);
+assert.ok(spots.length > 1, "a mature world should offer somewhere to strike");
+const canopy = Uint16Array.from(f.veg);
+const sizes = spots.map((i, k) => { f.veg.set(canopy); f.tick = 90000 + k * 13; return burn(f, i); });
+f.veg.set(canopy);
+assert.ok(new Set(sizes).size > 1, `fires have to differ in size, got ${sizes}`);
+assert.ok(sizes.some((n) => n > 0), `and some of them have to take hold, got ${sizes}`);
+chronicle();   // those strikes were an experiment, not this world's history
 
 // The sea crossing a mark. It moves by the century, so a run that waited for one
 // would cost minutes; but `sea()` is pure in the tick and the seed, so the day

@@ -182,11 +182,15 @@ const CHECKS: Check[] = [
     lo: 0, hi: 0.9,
     value: (r) => {
       const f = fires(r);
-      const big = Math.max(0, ...f);
-      return big > 0 ? median(f) / big : 0;
+      // Too few to say. Returning 0 here — "perfectly varied" — let a world
+      // that never burned at all sail through the check about how its fires
+      // differ, which is the same hole the "never arrived" sentinel had.
+      // Not a number fails, and the rate check above says what is really wrong.
+      if (f.length < 3) return NaN;
+      return median(f) / Math.max(...f);
     },
     why: "if every fire is the same size then one number decides how big a fire is, and the fuel, the wet ground and the rivers that are supposed to stop it never get a say",
-    known: "BURN_CAP binds on 92% of fires: measured 2026-09-12, rule left alone",
+
   },
 ];
 
@@ -234,8 +238,7 @@ for (const c of CHECKS) {
   const out = got.filter(({ v }) => !Number.isFinite(v) || v < c.lo || v > c.hi);
   const mark = out.length === 0 ? "ok  " : c.known ? "known" : "FAIL";
   if (out.length > 0) {
-    if (c.known) expected++; else failed++;
-    standing.push(c);
+    if (c.known) { expected++; standing.push(c); } else failed++;
   }
   const shown = got.map(({ v }) => (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0))).join(" ");
   rows.push(`${mark.padEnd(6)}${c.name.padEnd(38)}${shown.padStart(24)}   want ${c.lo}..${c.hi}`);
