@@ -60,7 +60,7 @@ function falling(i: number, slide: number): number {
 }
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
                   // 700mm a year, which is what a temperate pond loses
-export const RULE_VERSION = 12;
+export const RULE_VERSION = 13;
 
 export type World = {
   seed: number;
@@ -947,6 +947,31 @@ function carve(w: World, i: number) {
   load[i] = 0;
 }
 
+// Where the day's water came from and went. Every line in the tick that changes
+// `water` by anything other than moving it from one cell to another adds itself
+// up here, so the total on the map can be reconciled against them exactly. It
+// exists because the sea used to conjure water into any low hollow and nothing
+// noticed for days: `ground is conserved` follows rock and soil, and no check
+// followed water at all. It also catches the quieter thing — the ceilings at
+// 65535 silently destroying what will not fit.
+export type Budget = {
+  rained: number;    // fell out of the sky
+  dried: number;     // went back into it
+  tide: number;      // the sea set it, being a sink and a source both
+  spilled: number;   // lost at the Uint16 ceiling, which should be nothing
+};
+const day: Budget = { rained: 0, dried: 0, tide: 0, spilled: 0 };
+
+/** The day's water accounts, as of the last `step`. */
+export const budget = (): Budget => ({ ...day });
+
+/** The water standing on the whole map, in millimetres. */
+export function puddle(w: World): number {
+  let n = 0;
+  for (let i = 0; i < CELLS; i++) n += w.water[i];
+  return n;
+}
+
 /** One world-day. Rain, flow, erosion, deposition, growth, fire. */
 export function step(w: World): void {
   const { elev, soil, water, veg, rain } = w;
@@ -958,6 +983,7 @@ export function step(w: World): void {
   if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) drain(w);
 
   // rain, then evaporation. Vegetation holds moisture back.
+  day.rained = day.dried = day.tide = day.spilled = 0;
   const wet = weather(w.tick, w.seed);
   const level = sea(w.tick, w.seed);
   // Day one has no yesterday to have crossed anything from.
@@ -986,10 +1012,14 @@ export function step(w: World): void {
       // can hold and the rest runs off — which is how a landscape can be half
       // dry and still have rivers in it. Drawn for a patch of country rather
       // than a cell, because weather arrives as fronts.
-      const day = (((rain[i] * wet) / 100) | 0) >> 4;
+      const fell = (((rain[i] * wet) / 100) | 0) >> 4;
       const pour = falling(i, slide);
       if (pour > 0) {
-        water[i] = Math.min(65535, water[i] + ((day * STORMS * pour) / 1000 | 0));
+        const drop = (fell * STORMS * pour) / 1000 | 0;
+        const was = water[i];
+        water[i] = Math.min(65535, was + drop);
+        day.rained += water[i] - was;
+        day.spilled += drop - (water[i] - was);
       }
       // Two different things dry out at two different rates. Water held in the
       // soil goes as a share of what is there, faster where there is no canopy
@@ -1002,7 +1032,9 @@ export function step(w: World): void {
       const stored = water[i] < cap ? water[i] : cap;
       const standing = water[i] - stored;
       const dries = (stored * (160 - ((veg[i] * 80) / VEG_MAX | 0))) / 1000 | 0;
-      water[i] = Math.max(0, water[i] - dries - (standing < OPEN ? standing : OPEN));
+      const before = water[i];
+      water[i] = Math.max(0, before - dries - (standing < OPEN ? standing : OPEN));
+      day.dried += before - water[i];
     }
     height[i] = elev[i] * 100 + soil[i] + water[i];
     order[i] = i;
@@ -1027,12 +1059,15 @@ export function step(w: World): void {
     const t = Math.min(spare, (height[i] - lowestH) >> 1);
     if (t === 0) continue;
     water[i] -= t;
-    water[lowest] = Math.min(65535, water[lowest] + t);
+    const had = water[lowest];
+    water[lowest] = Math.min(65535, had + t);
+    day.spilled += t - (water[lowest] - had);
 
     height[i] = elev[i] * 100 + soil[i] + water[i];
     height[lowest] = elev[lowest] * 100 + soil[lowest] + water[lowest];
   }
 
+  dawn.set(veg);   // the canopy every cell is seeded from, before any of it grows
   for (let i = 0; i < CELLS; i++) {
     // The sea is a sink: it refills to its own level and swallows what arrives.
     // Only where it has actually reached, though — filling every low cell put
@@ -1041,7 +1076,9 @@ export function step(w: World): void {
     // off below sea level now takes rain like any other basin and ponds by the
     // same rules, which is what a Caspian is.
     if (submerged(w, i)) {
+      const stood = water[i];
       water[i] = Math.max(0, level - (elev[i] * 100 + soil[i]));
+      day.tide += water[i] - stood;
       veg[i] = Math.max(0, veg[i] - 50);
       continue;
     }
@@ -1078,7 +1115,13 @@ export function step(w: World): void {
     // Against the rain of the day rather than the map, so that what the land
     // can carry rises and falls with the decades and the margins move.
     const falls = ((rain[i] * wet) / 100) | 0;
-    const cap = carry(falls, s, damp);
+    // What the cell can hold, and then what its neighbours let it hold. A wood
+    // makes its own weather — shade, humus, shelter from the wind — so ground
+    // inside one carries canopy that the same ground in the open would not.
+    // This is the term that can join two woods into one: the rate bonus alone
+    // only got a cell to its own ceiling faster, and a ceiling set by rainfall
+    // is why six hundred separate woods never became six.
+    const cap = carry(falls, s, damp) + SHELTER * near(i);
     let d: number;
     if (excess > 1200) d = -20;              // drowned
     else if (s < 80) d = -5;                 // bare rock
@@ -1098,6 +1141,54 @@ export function step(w: World): void {
   }
   w.tick++;
   w.ruleVersion = RULE_VERSION;   // stamp the rules that actually ran this tick
+}
+
+// A wood is a thing that spreads, and until now nothing in this world spread.
+// Growth read the cell's own rain, its own soil and its own moisture and nothing
+// else, so trees did not arrive from anywhere — they appeared wherever the
+// ground would have them. The forest still came out clumped, because rainfall
+// and soil are clumped, but it came out as six hundred separate woods with the
+// largest holding a twentieth of the whole, and no rule existed that could ever
+// have made one wood out of two.
+//
+// So a cell fills faster for every neighbour already carrying canopy. Read from
+// a copy taken at dawn, for the same reason creep is: reading the live array
+// lets a cell be seeded by a neighbour that only grew this morning, which it can
+// only do from the side the scan came from, and the woods would then spread
+// faster to the south-east than to the north-west for no reason but the loop.
+const SEED_BAR = 4000;   // canopy a neighbour needs before it is seeding anything
+const SHELTER = 450;     // canopy a seeding neighbour adds to what the ground
+                         // can hold, so a wood closed on all sides lifts its
+                         // ceiling by about a third of the maximum and no more.
+                         //
+                         // Added and not multiplied, which was the first attempt
+                         // and the wrong shape. A ceiling of `carry() * 3` swamps
+                         // rainfall, and rainfall is the whole term that makes
+                         // forest country and grass country different places
+                         // rather than different years. The continent went from
+                         // a tenth forest to a third, reached a tenth before
+                         // world-year eight where it used to take sixteen, burnt
+                         // five times as often on the extra canopy, and — because
+                         // roots hold the riverbed as they hold the hillside —
+                         // cut its longest river in half. Added, it can only
+                         // carry ground that was already close: a cell the rain
+                         // would leave just short of forest becomes forest inside
+                         // a wood, and a desert cell stays desert whatever stands
+                         // around it.
+const dawn = new Uint16Array(CELLS);
+
+function near(i: number): number {
+  const x = i % SIZE, y = (i / SIZE) | 0;
+  const x0 = x > 0 ? -1 : 0, x1 = x < SIZE - 1 ? 1 : 0;
+  const y0 = y > 0 ? -SIZE : 0, y1 = y < SIZE - 1 ? SIZE : 0;
+  let n = 0;
+  for (let dy = y0; dy <= y1; dy += SIZE) {
+    for (let dx = x0; dx <= x1; dx++) {
+      if (dy === 0 && dx === 0) continue;
+      if (dawn[i + dy + dx] >= SEED_BAR) n++;
+    }
+  }
+  return n;
 }
 
 // ---- classification and wire format ---------------------------------------

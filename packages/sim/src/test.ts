@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -150,7 +150,14 @@ assert.ok(lit.length > 0, "a world that burned should say so");
 // floor under what was reported, never a match for it.
 const took = lit.reduce((n, e) => n + e.size, 0);
 assert.ok(took >= burnt, `the fires reported ${took} cells and ${burnt} are still bare`);
-assert.ok(took < CELLS / 5, `fire must not take the continent, reported ${took}`);
+// Against the land and not a fraction of it, because this is a flux and not a
+// stock: a cell can burn in the spring, grow back, and burn again by autumn, so
+// the year's total is not bounded by the size of the map at all. What it must
+// not exceed is the land itself — a world where the average cell burns more
+// than once a year is not a world with fires in it, it is a world on fire.
+let dryLand = 0;
+for (let i = 0; i < CELLS; i++) if (!submerged(f, i)) dryLand++;
+assert.ok(took < dryLand, `the average cell must not burn twice a year: ${took} over ${dryLand}`);
 for (const e of lit) {
   assert.ok(e.size > 0, "a strike that took nothing is weather, not an event");
   assert.strictEqual(e.rules, RULE_VERSION, "stamped with the rules that ran it");
@@ -227,6 +234,28 @@ step(tide);
 step(tide);
 assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), [],
   "a day that crosses no mark is not an event");
+
+// Water is accounted for. `ground is conserved` follows rock and soil, and
+// nothing followed water until the sea was caught conjuring it into hollows it
+// could not reach. The tick may only rain it, dry it, move it downhill, or hand
+// it to the sea; anything else is water from nowhere, and this is the line that
+// says so. Exact, every day, not a range.
+const acct = generate(4242);
+for (let t = 0; t < 200; t++) {
+  const before = puddle(acct);
+  step(acct);
+  const b = budget();
+  const after = puddle(acct);
+  // Spilled is in the identity and not left out of it, so this line stays true
+  // whatever the ceilings do. Leaving it out made the sum right only because
+  // the next line says nothing spills, which is two claims wearing one check.
+  assert.strictEqual(after - before, b.rained - b.dried + b.tide - b.spilled,
+    `day ${t}: the map holds ${after - before}mm more, the accounts say ${b.rained - b.dried + b.tide - b.spilled}mm`);
+  // The ceilings are a floor under an arithmetic accident, not a working part.
+  // A world that hits them is destroying water and calling it drainage.
+  assert.strictEqual(b.spilled, 0, `day ${t}: ${b.spilled}mm went over the 65535 ceiling`);
+}
+chronicle();
 
 // Slope failure, asked directly. It is the only rule that can make a closed
 // basin, so it is the only one holding the continent's lakes open past the

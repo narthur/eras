@@ -121,6 +121,10 @@ const CHECKS: Check[] = [
   {
     name: "the country is mixed",
     of: "the smaller of grass and forest, as a share of the two together",
+    // A floor with the arithmetic maximum written after it, not a range: the
+    // smaller of two shares cannot pass a half, so nothing could ever fail this
+    // from above and pretending otherwise would be a third dead ceiling. Half
+    // is the two in perfect balance, which is the best this can be.
     lo: 0.1, hi: 0.5,
     value: (r) => {
       const v = last(r);
