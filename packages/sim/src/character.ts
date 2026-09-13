@@ -7,8 +7,17 @@
 // wrong one so far was found by eye, weeks late, after a rule change quietly
 // flattened something nobody was watching.
 //
-//   pnpm character                 three seeds, sixty years each
-//   pnpm character 120 3           two centuries of it, three seeds
+//   pnpm character                 three seeds, fifty years each
+//   pnpm character 30              a quicker pass, with the slow checks unasked
+//   pnpm character 200 3           two centuries of it, for the slow questions
+//
+// Seeds run in parallel, one process each, so the wall clock is one seed's
+// rather than all of them: fifteen minutes became six. Fifty years is the
+// default because that is where the last of the fast checks settles — the
+// drainage network is still cutting at thirty. Checks that need longer say so
+// with `needs`, and a run too short to ask one reports that it did not ask
+// rather than reporting a pass. The basin trajectory wants a century and a
+// half; nothing else wants more than fifty.
 //
 // Deliberately not in CI. `pnpm test` is half a minute and gates every deploy;
 // this is a quarter of an hour and gates a judgement, which is a thing a person
@@ -30,10 +39,12 @@
 // is a `child_process.fork` per seed away from being three times faster — worth
 // doing the first time the wait actually stops you running it.
 
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { step, chronicle, type Event } from "./index.ts";
 import { vitals, opening, type Vitals } from "./vitals.ts";
 
-const YEARS = Number(process.argv[2] ?? 60);
+const YEARS = Number(process.argv[2] ?? 50);
 const SEEDS = Number(process.argv[3] ?? 3);
 const DAYS = 400;
 const EVERY = 4;   // years between readings
@@ -49,6 +60,9 @@ type Check = {
   value: (r: Run) => number;
   why: string;
   known?: string;                  // a failure already understood, and why it stands
+  needs?: number;                  // world-years before this means anything. A run
+                                   // shorter than it does not ask the question and
+                                   // does not pretend to have answered it
 };
 
 const last = (r: Run) => r.series[r.series.length - 1];
@@ -81,7 +95,8 @@ const CHECKS: Check[] = [
     lo: 0.8, hi: 4,
     value: (r) => (at(r, 20).basins > 0 ? last(r).basins / at(r, 20).basins : 0),
     why: "worldgen's hollows are a one-time gift. They fell 246 to 25 over two centuries and took every lake with them, which is what slope failure was added to stop",
-    known: "slowed, not stopped over centuries: measured 353 at year twenty against 230 at year two hundred. Sixty years cannot see it, so this passes at the default horizon and only fails on a long run. Sinkholes are the candidate",
+    needs: 150,
+    known: "slowed, not stopped over centuries: measured 353 at year twenty against 230 at year two hundred. Sinkholes are the candidate",
   },
   {
     name: "there is standing water",
@@ -115,6 +130,11 @@ const CHECKS: Check[] = [
     name: "rivers run the whole way",
     of: "the longest reach, as a multiple of how far it is across the continent",
     lo: 0.4, hi: 8,
+    // A drainage network is still cutting at thirty years: measured 0.40 then
+    // and 0.66 on the same seed at sixty. The floor is about a mature world, so
+    // asking it of a young one measures how old the world is, not whether its
+    // rivers run.
+    needs: 50,
     value: (r) => (last(r).span > 0 ? last(r).river / last(r).span : 0),
     why: "accumulation over the raw surface dies at every pit. Nothing ran past about thirty cells until the flood fill went in. Against the continent's own span and not a count of cells: a reach 'runs the whole way' when it gets from somewhere inland to the sea, which is about half a span, and that stays true if SIZE ever changes. The absolute hundred this started as came from a single seed's test assertion and failed the first other seed it met, at 86 cells on a continent exactly as wide as the one where 165 was normal. The span is the root of the island's area, so it reads a ragged coastline as narrower than it is and flatters the ratio — the bias is toward passing, so a failure here is real and a pass is the weaker claim",
   },
@@ -220,13 +240,50 @@ function run(seed: number): Run {
 // continents and not on the one that is actually running is not much use.
 const SEED_LIST = [1234, 20260910, 7, 4242, 99].slice(0, SEEDS);
 
-console.log(`${SEEDS} seeds, ${YEARS} years of ${DAYS} days each. This takes a while.`);
-const runs: Run[] = [];
-for (const seed of SEED_LIST) {
-  const t0 = Date.now();
-  runs.push(run(seed));
-  console.log(`  seed ${seed} done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+// One process a seed. They share nothing — the sim keeps scratch arrays and a
+// chronicle at module scope, and a fresh process is the only way to be certain
+// one continent's leftovers never reach another's measurements — and the wall
+// clock becomes one seed's instead of all of them.
+const ALONE = process.env.ERAS_SEED;
+if (ALONE) {
+  // Checked before the run and not after it: `process.send` exists only down an
+  // IPC channel, so running this file by hand with ERAS_SEED set would
+  // otherwise simulate for minutes and then throw with nothing to show for it.
+  if (!process.send) throw new Error("ERAS_SEED only means anything to a forked child");
+  process.send(run(Number(ALONE)));
+} else {
+  console.log(`${SEEDS} seeds, ${YEARS} years of ${DAYS} days each, side by side.`);
+  const started = Date.now();
+  const children: ReturnType<typeof fork>[] = [];
+  const runs = await Promise.all(SEED_LIST.map((seed) => new Promise<Run>((ok, no) => {
+    const child = fork(fileURLToPath(import.meta.url), process.argv.slice(2), {
+      execArgv: process.execArgv,          // the child needs the same type stripping
+      env: { ...process.env, ERAS_SEED: String(seed) },
+    });
+    children.push(child);
+    child.on("message", (m) => {
+      // Said as each one lands, not once at the end. The serial version printed
+      // a line per seed, and without it a seed that hangs — which is exactly the
+      // kind of regression this exists to catch — shows as nothing at all.
+      console.log(`  seed ${seed} in ${((Date.now() - started) / 1000).toFixed(0)}s`);
+      ok(m as Run);
+    });
+    // A spawn that fails emits `error` and never emits `exit`, and an unhandled
+    // `error` on an emitter takes the whole parent down with a stack trace
+    // instead of a sentence.
+    child.on("error", no);
+    child.on("exit", (code) => no(new Error(`seed ${seed} exited ${code} with nothing to say`)));
+  }))).catch((e) => {
+    // The siblings are minutes of CPU each and would go on to send into a
+    // channel that is already gone. Stop them before saying why.
+    for (const c of children) c.kill();
+    throw e;
+  });
+  console.log(`  ${((Date.now() - started) / 1000).toFixed(0)}s in all`);
+  report(runs);
 }
+
+function report(runs: Run[]) {
 
 // A check passes when every seed is inside the range. One seed out is the
 // interesting case and gets named: the weather swings hard enough that a
@@ -234,7 +291,16 @@ for (const seed of SEED_LIST) {
 let failed = 0, expected = 0;
 const rows: string[] = [];
 const standing: Check[] = [];   // known failures that are still failing
+let unasked = 0;
 for (const c of CHECKS) {
+  // A run too short to answer a question has not answered it. Saying "ok" here
+  // would be the same lie as a sentinel inside its own range: a pass nobody
+  // earned, on a check nobody ran.
+  if (c.needs !== undefined && YEARS < c.needs) {
+    unasked++;
+    rows.push(`--    ${c.name.padEnd(38)}${"not asked".padStart(24)}   needs ${c.needs} years`);
+    continue;
+  }
   const got = runs.map((r) => ({ seed: r.seed, v: c.value(r) }));
   // Number.isFinite first, because NaN fails both comparisons and would
   // otherwise read as inside the range. A check that cannot be computed has
@@ -258,7 +324,9 @@ console.log();
 // is news, and printing its excuse every run would hide that it had.
 for (const c of standing) console.log(`known: ${c.name} — ${c.known}`);
 console.log();
+const short = unasked > 0 ? `, ${unasked} not asked at ${YEARS} years` : "";
 console.log(failed === 0
-  ? `the world is still itself (${expected} known failures stand)`
-  : `${failed} unexpected, ${expected} known. A range is either wrong or the world is`);
+  ? `the world is still itself (${expected} known failures stand${short})`
+  : `${failed} unexpected, ${expected} known${short}. A range is either wrong or the world is`);
 process.exitCode = failed === 0 ? 0 : 1;
+}
