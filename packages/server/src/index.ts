@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { chronicle, features, generate, step, pack, unpack, EVENT_KINDS, type Event, type Feature, type World } from "@eras/sim";
+import { features, generate, step, pack, unpack, EVENT_KINDS, type Event, type Feature, type World } from "@eras/sim";
 
 const BURST = 200;   // ticks per alarm, ~2s of CPU; catching up reschedules at once
 const SEED = 20260910;
@@ -105,8 +105,8 @@ export class WorldDO extends DurableObject<Env> {
   // nothing would ever make them again — the same reason `load()` refuses to
   // regenerate a world it cannot read. Whatever did not land stays queued and
   // goes in on the next alarm; the rollback means it cannot go in twice.
-  private record(): boolean {
-    this.pending.push(...chronicle());
+  private record(told: Event[]): boolean {
+    this.pending.push(...told);
     // A queue that only ever grows is a leak. It can only get here if the write
     // has been failing for hours, by which point the object is throwing on every
     // alarm and the world has stopped: the memory is the problem to bound, and
@@ -148,13 +148,24 @@ export class WorldDO extends DurableObject<Env> {
   }
 
   async alarm() {
-    const world = await this.load();
+    let world = await this.load();
     const target = Math.floor((Date.now() - this.genesis) / this.tickMs);
     const run = Math.min(BURST, target - world.tick);
-    for (let i = 0; i < run; i++) step(world);
+    // `step` hands back a new world rather than changing this one, so the burst
+    // walks a chain of them and what the object keeps is the last. The events
+    // come back the same way and are handed to `record` instead of being
+    // collected from a global — which is what makes the drain-before-write
+    // hazard structurally impossible rather than merely fixed.
+    const told: Event[] = [];
+    for (let i = 0; i < run; i++) {
+      const day = step(world);
+      world = day.world;
+      told.push(...day.events);
+    }
+    this.world = world;
     await this.save();
 
-    const wrote = this.record();
+    const wrote = this.record(told);
     const changed = this.sweep(world);
     const behind = world.tick < target;
     await this.ctx.storage.setAlarm(
@@ -197,7 +208,7 @@ export class WorldDO extends DurableObject<Env> {
     // swept and stayed quiet would leave the people already here a full window
     // behind on a world the object had already looked at.
     if (this.sweep(world)) this.broadcast(JSON.stringify({ features: this.found }));
-    this.record();   // no ticks have run, so this only fills `recent` the first time
+    this.record([]);   // no ticks have run, so this only fills `recent` the first time
 
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);

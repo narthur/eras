@@ -1,5 +1,22 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, rainfall, wave, VEER, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, rainfall, wave, VEER, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts";
+
+/**
+ * Run a world on, and hand back both it and what happened while it did. The
+ * sim reports a day's events with the day, so a test that wants a run's
+ * history gathers it here rather than draining a module-level log — which is
+ * why most of the `chronicle()` calls this file used to need, purely to stop
+ * one block's events arriving in the middle of another's, are gone.
+ */
+const run = (w: World, days: number): [World, Event[]] => {
+  const told: Event[] = [];
+  for (let i = 0; i < days; i++) {
+    const day = step(w);
+    w = day.world;
+    told.push(...day.events);
+  }
+  return [w, told];
+};
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -7,13 +24,13 @@ const count = (w: ReturnType<typeof generate>) => {
   return t;
 };
 
-const a = generate(1234);
+let a = generate(1234);
 assert.ok(count(a)[Biome.Ocean] > CELLS * 0.1, "worldgen should leave a sea");
 assert.ok(count(a)[Biome.Ocean] < CELLS * 0.9, "worldgen should leave land");
 
 const t0 = Date.now();
 const TICKS = 400;
-for (let i = 0; i < TICKS; i++) step(a);
+a = run(a, TICKS)[0];
 const ms = Date.now() - t0;
 
 // Byte by byte, by hand. A failed deepStrictEqual on two worlds renders a diff
@@ -27,8 +44,7 @@ const same = (x: ArrayBuffer, y: ArrayBuffer, what: string) => {
   }
 };
 
-const b = generate(1234);
-for (let i = 0; i < TICKS; i++) step(b);
+const b = run(generate(1234), TICKS)[0];
 same(pack(a), pack(b), "same seed must give the same world");
 
 const c = unpack(pack(a));
@@ -205,17 +221,15 @@ assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain
 // Fire, on a world already grown over: rare enough that the ordinary run above
 // sees none, so this one starts mature. Deterministic, so it either burns for
 // this seed or it never will.
-const mature = () => {
+const mature = (): [World, Event[]] => {
   const m = generate(1234);
   m.veg.fill(9500);
-  for (let i = 0; i < TICKS; i++) step(m);
-  return m;
+  return run(m, TICKS);
 };
-chronicle();   // the ordinary run above is not what this block is measuring
-const f = mature();
+const [f, hist] = mature();
 // Fires only: a made-mature world still has rivers cutting slopes out from
 // under each other, so slides turn up here too.
-const lit = chronicle().filter((e) => e.kind === "fire");
+const lit = hist.filter((e) => e.kind === "fire");
 const burnt = [...f.veg].filter((v, i) => !submerged(f, i) && v < 500).length;
 assert.ok(burnt > 0, "a mature dry world should burn somewhere in a year");
 // A fifth, where this used to say a twentieth. The old figure was the cap's
@@ -252,8 +266,9 @@ for (const e of lit) {
 // This is the only world here that catches fire, so the determinism check has
 // to be made again on it, or the one rule in the tick that draws on chance
 // goes unwatched. Swapping the seeded hash for Math.random fails this line.
-same(pack(mature()), pack(f), "a world that burns must burn the same way twice");
-assert.deepStrictEqual(chronicle().filter((e) => e.kind === "fire"), lit,
+const [encore, hist2] = mature();
+same(pack(encore), pack(f), "a world that burns must burn the same way twice");
+assert.deepStrictEqual(hist2.filter((e) => e.kind === "fire"), lit,
   "and it must be written down the same way twice");
 
 // The regression the whole rule was rewritten for, asked by striking the same
@@ -268,7 +283,6 @@ assert.deepStrictEqual(chronicle().filter((e) => e.kind === "fire"), lit,
 // one fire and that fire is capped. Which is right for such a world, and no use
 // for showing that size varies. `f` is free to be burnt now: the two checks
 // that needed it pristine have both been made.
-chronicle();
 const spots: number[] = [];
 for (let i = 0; i < CELLS && spots.length < 8; i += 977) if (f.veg[i] > 5000) spots.push(i);
 assert.ok(spots.length > 1, "a mature world should offer somewhere to strike");
@@ -277,7 +291,6 @@ const sizes = spots.map((i, k) => { f.veg.set(canopy); f.tick = 90000 + k * 13; 
 f.veg.set(canopy);
 assert.ok(new Set(sizes).size > 1, `fires have to differ in size, got ${sizes}`);
 assert.ok(sizes.some((n) => n > 0), `and some of them have to take hold, got ${sizes}`);
-chronicle();   // those strikes were an experiment, not this world's history
 
 // The sea crossing a mark. It moves by the century, so a run that waited for one
 // would cost minutes; but `sea()` is pure in the tick and the seed, so the day
@@ -289,14 +302,13 @@ for (let t = 1; t < 365 * 400 && crossing < 0; t++) {
   if (notchOf(t, 1234) !== notchOf(t - 1, 1234)) crossing = t;
 }
 assert.ok(crossing > 0, "four centuries of this seed should move the sea five metres");
-chronicle();
-const tide = generate(1234);
-// Two steps: the first is the eve, and it is what a world resumed from storage
+let tide = generate(1234);
+// Two days: the first is the eve, and it is what a world resumed from storage
 // has never had — a yesterday. The second is the day the sea changes mark.
 tide.tick = crossing - 1;
-step(tide);          // the eve: nothing to compare against yet, so it says nothing
-step(tide);          // and this is the day itself
-const turned = chronicle().filter((e) => e.kind === "sea");
+const [tideRan, tideTold] = run(tide, 2);
+tide = tideRan;
+const turned = tideTold.filter((e) => e.kind === "sea");
 assert.strictEqual(turned.length, 1, `one crossing at tick ${crossing}, got ${turned.length}`);
 assert.strictEqual(turned[0].tick, crossing, "dated the day it crossed");
 assert.strictEqual(turned[0].x, -1, "the sea happens everywhere, so it points nowhere");
@@ -305,19 +317,15 @@ assert.strictEqual(turned[0].size, (sea(crossing, 1234) / 1000) | 0, "in metres 
 // And a world that has only just been picked up off the disk still catches it.
 // This is the whole point of asking `sea` for yesterday instead of remembering
 // it: a restart used to cost the first crossing after it, silently.
-chronicle();
 const resumed = generate(1234);
 resumed.tick = crossing;
-step(resumed);
-assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), turned,
+assert.deepStrictEqual(run(resumed, 1)[1].filter((e) => e.kind === "sea"), turned,
   "a world resumed on the day must report the crossing the same as one that ran into it");
 
 // And an ordinary day after it says nothing at all — two steps, so the second
 // of them is a day with a known yesterday rather than one that only primes.
 tide.tick = crossing + 5;
-step(tide);
-step(tide);
-assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), [],
+assert.deepStrictEqual(run(tide, 2)[1].filter((e) => e.kind === "sea"), [],
   "a day that crosses no mark is not an event");
 
 // Water is accounted for. `ground is conserved` follows rock and soil, and
@@ -325,11 +333,12 @@ assert.deepStrictEqual(chronicle().filter((e) => e.kind === "sea"), [],
 // could not reach. The tick may only rain it, dry it, move it downhill, or hand
 // it to the sea; anything else is water from nowhere, and this is the line that
 // says so. Exact, every day, not a range.
-const acct = generate(4242);
+let acct = generate(4242);
 for (let t = 0; t < 200; t++) {
   const before = puddle(acct);
-  step(acct);
-  const b = budget();
+  const today = step(acct);
+  acct = today.world;
+  const b = today.budget;
   const after = puddle(acct);
   // Spilled is in the identity and not left out of it, so this line stays true
   // whatever the ceilings do. Leaving it out made the sum right only because
@@ -340,7 +349,6 @@ for (let t = 0; t < 200; t++) {
   // A world that hits them is destroying water and calling it drainage.
   assert.strictEqual(b.spilled, 0, `day ${t}: ${b.spilled}mm went over the 65535 ceiling`);
 }
-chronicle();
 
 // Slope failure, asked directly. It is the only rule that can make a closed
 // basin, so it is the only one holding the continent's lakes open past the
@@ -371,17 +379,17 @@ const ground = (w: World) => {
   for (let i = 0; i < CELLS; i++) m += w.elev[i] * 100 + w.soil[i];
   return m;
 };
-// The log is one stream for the whole process, so it has to start empty here:
-// the runs above are a world of their own and a loud slide in one of them would
-// arrive in the middle of what this block is about to measure.
-chronicle();
 const hill = face();
 const rock = ground(hill);
 let failures = 0, bared = 0;
+// `slump` hands back what it buried, so this collects the record and the ground
+// in one pass. It used to have to drain a process-wide log first, in case a
+// loud slide from one of the runs above arrived in the middle of this block.
+const wrote: Event[] = [];
 for (let t = 0; t < 40; t++) {
   hill.tick = t;
   const before = Int16Array.from(hill.elev);
-  slump(hill);
+  wrote.push(...slump(hill));
   for (let i = 0; i < CELLS; i++) if (before[i] !== hill.elev[i]) failures++;
 }
 for (let i = 0; i < CELLS; i++) if ((i % SIZE) % 2 === 0 && hill.soil[i] === 0) bared++;
@@ -396,16 +404,12 @@ for (let i = 0; i < CELLS; i++) assert.ok(hill.soil[i] < 65535, "debris must not
 // the bar, and makes a run a poor place to ask whether the writing-down works.
 // The slide is the only kind a made world can produce; fire and the sea travel
 // the same two lines out of the tick.
-const wrote = chronicle();
-assert.deepStrictEqual(chronicle(), [], "draining twice must not hand out the same events twice");
-
 // Same ground, same record: the chronicle has to be as reproducible as the
-// world, or two runs of one seed disagree about what happened in it. Asked
-// here, before anything else in this file slumps a face — the log is one
-// stream and whatever is written next would arrive in the middle of it.
+// world, or two runs of one seed disagree about what happened in it.
 const rerun = face();
-for (let t = 0; t < 40; t++) { rerun.tick = t; slump(rerun); }
-assert.deepStrictEqual(chronicle(), wrote, "one seed must write one chronicle");
+const again: Event[] = [];
+for (let t = 0; t < 40; t++) { rerun.tick = t; again.push(...slump(rerun)); }
+assert.deepStrictEqual(again, wrote, "one seed must write one chronicle");
 
 // A face under the bar moves the same ground and says nothing about it. This
 // is the whole of what LOUD does, and the only place it can be asked plainly:
@@ -414,9 +418,10 @@ assert.deepStrictEqual(chronicle(), wrote, "one seed must write one chronicle");
 const low = face();
 for (let i = 0; i < CELLS; i++) if ((i % SIZE) % 2 === 0) low.elev[i] = 250;   // a twenty-metre face
 const shelf = Int16Array.from(low.elev);
-for (let t = 0; t < 40; t++) { low.tick = t; slump(low); }
+const hush: Event[] = [];
+for (let t = 0; t < 40; t++) { low.tick = t; hush.push(...slump(low)); }
 assert.ok([...low.elev].some((v, i) => v !== shelf[i]), "a twenty-metre face over a river still has to fail");
-assert.deepStrictEqual(chronicle(), [], "but a slip under the bar is not news");
+assert.deepStrictEqual(hush, [], "but a slip under the bar is not news");
 
 assert.ok(wrote.length > 0, "a face that failed should be written down");
 assert.deepStrictEqual(wrote, [...wrote].sort((p, q) => p.tick - q.tick), "the chronicle runs forwards");

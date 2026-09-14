@@ -65,7 +65,7 @@ const DAYS = 400;   // days to a year here. The world itself has no year in it â
                     // the viewer's clock happens to divide by 365 â€” so this is
                     // only the interval these rows are reported on
 
-const [w, start] = opening(SEED);
+let [w, start] = opening(SEED);
 let was = start;
 
 function line(year: number, ms: number) {
@@ -103,7 +103,7 @@ line(0, 0);
 let spent = 0, ticked = 0;
 for (let year = 1; year <= YEARS; year++) {
   const t0 = Date.now();
-  for (let d = 0; d < DAYS; d++) step(w);
+  for (let d = 0; d < DAYS; d++) w = step(w).world;
   spent += Date.now() - t0;
   ticked += DAYS;
   if (year % EVERY === 0 || year === YEARS) {

@@ -41,7 +41,7 @@
 
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { step, chronicle, type Event } from "./index.ts";
+import { step, type Event } from "./index.ts";
 import { vitals, opening, type Vitals } from "./vitals.ts";
 
 const YEARS = Number(process.argv[2] ?? 50);
@@ -219,15 +219,17 @@ const CHECKS: Check[] = [
 ];
 
 function run(seed: number): Run {
-  const [w, start] = opening(seed);
+  let [w, start] = opening(seed);
   let was = start;
   const series: Vitals[] = [vitals(w, 0, was)];
-  chronicle();   // whatever an earlier seed left is not this one's history
   const events: Event[] = [];
   was = Int16Array.from(w.elev);
   for (let year = 1; year <= YEARS; year++) {
-    for (let d = 0; d < DAYS; d++) step(w);
-    events.push(...chronicle());
+    for (let d = 0; d < DAYS; d++) {
+      const day = step(w);
+      w = day.world;
+      events.push(...day.events);
+    }
     if (year % EVERY === 0 || year === YEARS) {
       series.push(vitals(w, year, was));
       was = Int16Array.from(w.elev);

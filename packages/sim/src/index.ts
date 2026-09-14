@@ -120,6 +120,33 @@ export type World = {
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
+/**
+ * A world and everything else the day produced. `step` hands this back rather
+ * than leaving the events and the water accounts in module variables for a
+ * caller to come and collect: a global that has to be drained in the right
+ * order is a race waiting for a second caller, and this world has already lost
+ * a day's events to exactly that.
+ */
+export type Day = { world: World; events: Event[]; budget: Budget };
+
+/**
+ * A world is six typed arrays and three numbers, and copying the lot costs
+ * 0.021ms against a 13.8ms tick — two parts in a thousand. That is the whole
+ * reason `step` can be pure: nothing here is too big to copy, it only looked
+ * that way.
+ */
+const copy = (w: World): World => ({
+  seed: w.seed,
+  tick: w.tick,
+  ruleVersion: w.ruleVersion,
+  elev: w.elev.slice(),
+  soil: w.soil.slice(),
+  water: w.water.slice(),
+  veg: w.veg.slice(),
+  flow: w.flow.slice(),
+  rain: w.rain.slice(),
+});
+
 // ---- the chronicle --------------------------------------------------------
 // What happened, as against what is. The world state is a photograph: it holds
 // the dammed valley but not the day the slope came down, and a world that is
@@ -141,18 +168,23 @@ export type Event =
 // disagree loudly rather than quietly.
 export const EVENT_KINDS = ["fire", "slide", "sea"] as const satisfies readonly EventKind[];
 
-const happened: Event[] = [];
-const LOG_CAP = 4096;   // so a bench that never drains cannot grow without end
-
-/** `at` is a cell, or -1 for the things that happen to the whole world. */
-function note(w: World, kind: EventKind, at: number, size: number) {
-  if (happened.length >= LOG_CAP) happened.splice(0, LOG_CAP / 4);
+/**
+ * One thing that happened, ready to be handed up. `at` is a cell, or -1 for the
+ * things that happen to the whole world.
+ *
+ * A constructor and not a sink. This used to push onto a module-level array
+ * that the caller drained, which meant the log had to be capped in case nobody
+ * ever did, and meant a second caller draining between two ticks silently took
+ * the first one's history. Neither problem exists once the day hands back what
+ * it did: there is nothing to accumulate and nothing to race for.
+ */
+function happening(w: World, kind: EventKind, at: number, size: number): Event {
   const x = at < 0 ? -1 : at % SIZE, y = at < 0 ? -1 : (at / SIZE) | 0;
   // The rules that are running, not `w.ruleVersion`, which is stamped at the end
   // of the tick and so still says yesterday's on the first day under new ones.
   // Old rows stay labelled with the rules of their era, which is the only way a
   // log that outlives its own thresholds stays self-describing.
-  happened.push({ tick: w.tick, rules: RULE_VERSION, kind, x, y, size });
+  return { tick: w.tick, rules: RULE_VERSION, kind, x, y, size };
 }
 
 // The sea moves by the century, so it has no day of its own to be recorded on.
@@ -165,16 +197,6 @@ function note(w: World, kind: EventKind, at: number, size: number) {
 // it was standing on the same way a world that never stopped does.
 const MARK = 5000;   // millimetres between one notch and the next
 const notchOf = (level: number) => Math.trunc(level / MARK);   // symmetric about zero
-
-/**
- * What the world has done since this was last asked, oldest first. Drained:
- * whoever asks takes them, because the caller is the one that can keep them.
- * Module-level rather than hung off the World, so the packed format — whose
- * byte length is load-bearing — does not have to learn about it.
- */
-export function chronicle(): Event[] {
-  return happened.splice(0);
-}
 
 /**
  * Where the sea stands, in millimetres against the datum worldgen was drawn to.
@@ -748,8 +770,9 @@ const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
 const LOUD = 40;
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
-export function slump(w: World) {
+export function slump(w: World): Event[] {
   const { elev, soil, water, veg, flow } = w;
+  const told: Event[] = [];
   slides.length = 0;
   for (let i = 0; i < CELLS; i++) {
     if (flow[i] <= DAMS) continue;
@@ -807,8 +830,9 @@ export function slump(w: World) {
     // recording is the river that stopped, not the hillside that is now short.
     // In metres of rock, which is what elev counts in tens of.
     const fell = (rock / 10) | 0;
-    if (fell >= LOUD) note(w, "slide", dam, fell);
+    if (fell >= LOUD) told.push(happening(w, "slide", dam, fell));
   }
+  return told;
 }
 
 const was = new Uint16Array(CELLS);   // the soil as it stood when the pass began
@@ -870,12 +894,12 @@ function crawl(w: World) {
 }
 
 /** Redraws the drainage network into `flow`, in rain per cell per day. */
-function drain(w: World) {
+function drain(w: World): Event[] {
   const { elev, soil, rain, flow } = w;
   const wet = weather(w.tick, w.seed);
   winds(w);        // where the rain falls, given the shape of the land today
-  crawl(w);        // before the flood, so it fills the surface creep just made
-  slump(w);        // and before it too, so a new dam ponds on the pass it forms
+  crawl(w);              // before the flood, so it fills the surface creep just made
+  const told = slump(w); // and before it too, so a new dam ponds on the pass it forms
   // Those two are the only things in a day that move the ground, and slump is
   // the one rule that can seal a channel. So the coastline is redrawn here, on
   // the ground as it now stands: the loop below takes each cell's height live
@@ -936,6 +960,7 @@ function drain(w: World) {
     flow[i] = Math.min(65535, acc[i] >> 6);
     carve(w, i);
   }
+  return told;
 }
 
 // What a river can carry past a cell: its discharge times the steepness of the
@@ -1012,10 +1037,14 @@ export type Budget = {
   tide: number;      // the sea set it, being a sink and a source both
   spilled: number;   // lost at the Uint16 ceiling, which should be nothing
 };
-const day: Budget = { rained: 0, dried: 0, tide: 0, spilled: 0 };
-
-/** The day's water accounts, as of the last `step`. */
-export const budget = (): Budget => ({ ...day });
+/**
+ * Four running totals over a 65,536-cell pass. Kept as one mutable object made
+ * fresh each day and handed back at the end of it: a reduce that returned a new
+ * object per cell would allocate a quarter of a million of them a tick to
+ * express four additions. This is the performance exception, and it is the
+ * whole of it — the object never leaves the `step` that made it.
+ */
+const ledger = (): Budget => ({ rained: 0, dried: 0, tide: 0, spilled: 0 });
 
 /** The water standing on the whole map, in millimetres. */
 export function puddle(w: World): number {
@@ -1024,23 +1053,29 @@ export function puddle(w: World): number {
   return n;
 }
 
-/** One world-day. Rain, flow, erosion, deposition, growth, fire. */
-export function step(w: World): void {
+/**
+ * One world-day: rain, flow, erosion, deposition, growth, fire. Takes the world
+ * as it stands and hands back the next one, what happened in it, and where the
+ * day's water came from and went. The world passed in is not touched.
+ */
+export function step(prev: World): Day {
+  const w = copy(prev);
   const { elev, soil, water, veg, rain } = w;
+  const events: Event[] = [];
+  const day = ledger();
   fires.length = 0;
   // Where the water goes, as against where today's water is. Rare, and pinned
   // to the day rather than to how long this copy of the world has been awake.
   // Also on the first tick under new rules, since a world that arrives carrying
   // some older idea of what `flow` meant should not draw rivers from it.
-  if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) drain(w);
+  if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) events.push(...drain(w));
 
   // rain, then evaporation. Vegetation holds moisture back.
-  day.rained = day.dried = day.tide = day.spilled = 0;
   const wet = weather(w.tick, w.seed);
   const level = sea(w.tick, w.seed);
   // Day one has no yesterday to have crossed anything from.
   if (w.tick > 0 && notchOf(level) !== notchOf(sea(w.tick - 1, w.seed))) {
-    note(w, "sea", -1, (level / 1000) | 0);
+    events.push(happening(w, "sea", -1, (level / 1000) | 0));
   }
   const [slideX, slideY] = fronts(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
@@ -1189,10 +1224,11 @@ export function step(w: World): void {
   for (const i of fires) {
     const burnt = burn(w, i);
     // A strike that finds nothing to take is not an event; it is weather.
-    if (burnt > 0) note(w, "fire", i, burnt);
+    if (burnt > 0) events.push(happening(w, "fire", i, burnt));
   }
   w.tick++;
   w.ruleVersion = RULE_VERSION;   // stamp the rules that actually ran this tick
+  return { world: w, events, budget: day };
 }
 
 // A wood is a thing that spreads, and until now nothing in this world spread.
