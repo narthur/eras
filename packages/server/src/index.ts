@@ -24,7 +24,7 @@ export class WorldDO extends DurableObject<Env> {
   private found: Feature[] = [];
   private foundAt = -FEATURE_EVERY;   // so the first sweep runs immediately
   private recent?: Event[];           // the tail of the chronicle, read once and then kept
-  private pending: Event[] = [];      // drained from the sim, not yet durable
+  private pending: Event[] = [];      // reported by the ticks, not yet durable
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -95,16 +95,21 @@ export class WorldDO extends DurableObject<Env> {
     await this.ctx.storage.put({ world: pack(this.world!), genesis: this.genesis });
   }
 
-  // Everything the ticks just run wrote down, oldest first. Drained from the
-  // sim whether or not anyone is watching: an event nobody takes is an event
-  // the world forgets, and the point of the chronicle is that it does not.
+  // Everything the ticks just run wrote down, oldest first, handed over by the
+  // days that made it.
   //
-  // Held in a field until the rows are in, because the drain is destructive and
-  // the write can fail. A throw rolls this handler's storage back, and the
-  // world in memory has already moved past the ticks that made these, so
-  // nothing would ever make them again — the same reason `load()` refuses to
-  // regenerate a world it cannot read. Whatever did not land stays queued and
-  // goes in on the next alarm; the rollback means it cannot go in twice.
+  // Held in a field until the rows are in, and still necessary now that the sim
+  // hands events back rather than being drained of them. The reason moved, so
+  // it is worth stating plainly: `save()` persists the advanced world before
+  // this commits its rows. If the write fails after that, the throw rolls this
+  // handler's storage back — but the world those events came from is already
+  // durable and already past them, so replaying the ticks cannot produce them a
+  // second time. The queue is what stands between a failed write and a hole in
+  // the chronicle. Whatever did not land stays in it and goes in on the next
+  // alarm; the rollback means it cannot go in twice.
+  //
+  // Do not read this as vestigial because the destructive drain it was first
+  // written for is gone. The hazard it guards is the write order, not the drain.
   private record(told: Event[]): boolean {
     this.pending.push(...told);
     // A queue that only ever grows is a leak. It can only get here if the write

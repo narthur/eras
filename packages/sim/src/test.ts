@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, rainfall, wave, VEER, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, coastline, carry, fills, slump, burn, rainfall, wave, VEER, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts";
 
 /**
  * Run a world on, and hand back both it and what happened while it did. The
@@ -52,6 +52,100 @@ same(pack(c), pack(a), "every field must survive the round trip");
 assert.strictEqual(c.tick, a.tick, "and the tick with it");
 assert.strictEqual(c.seed, a.seed, "and the seed");
 assert.throws(() => unpack(pack(a).slice(0, 64)), /bytes/, "a short buffer must say so");
+
+// ---- what a pure step promises --------------------------------------------
+// These four exist because the rules stopped sharing state. Every one of them
+// passed trivially before the change and would have had nothing to say; they
+// pin the properties that replaced twenty module-level buffers, and they are
+// the only things standing between those buffers and a quiet return.
+
+// One: the world handed in is not the world handed back, and is not touched.
+// The whole guarantee is a single `copy(prev)` at the top of a two-hundred-line
+// function, which is exactly the kind of line someone removes to save an
+// allocation in a hot loop without noticing what else it was holding up.
+{
+  const before = generate(9);
+  const untouched = pack(before);
+  const day = step(before);
+  same(pack(before), untouched, "step must not touch the world it was given");
+  assert.notStrictEqual(day.world, before, "and must hand back a different world");
+  assert.strictEqual(before.tick + 1, day.world.tick, "which has moved on by a day");
+}
+
+// Two: two worlds in flight at once do not see each other. This is the test for
+// the entire bug class the refactor removes — a shared buffer, a drained log, a
+// cache keyed on a tick two worlds can both be standing on. Sequential runs
+// cannot find it, because they never have two worlds alive together; these are
+// interleaved a day at a time on purpose.
+{
+  const days = 60;
+  let p1 = generate(11), p2 = generate(22);
+  const told1: Event[] = [], told2: Event[] = [];
+  for (let t = 0; t < days; t++) {
+    const d1 = step(p1); p1 = d1.world; told1.push(...d1.events);
+    const d2 = step(p2); p2 = d2.world; told2.push(...d2.events);
+  }
+  const [alone1, solo1] = run(generate(11), days);
+  const [alone2, solo2] = run(generate(22), days);
+  same(pack(p1), pack(alone1), "a world stepped beside another must come out the same");
+  same(pack(p2), pack(alone2), "and so must the other one");
+  assert.deepStrictEqual(told1, solo1, "and it must report the same history");
+  assert.deepStrictEqual(told2, solo2, "and so must the other one");
+}
+
+// Two and a half: and they must not confuse each other's coastline either.
+// `submerged` is the last memo in the file, and two worlds interleaved are
+// standing on the same day for most of it — which is precisely the case a cache
+// keyed on the day and not on the world gets wrong. Stepping alone cannot find
+// this, because nothing inside `step` reads that memo; only a reader does. So
+// the reading is interleaved too, which is the only way the question gets
+// asked. Checked by deliberately dropping the identity half of the key.
+{
+  const days = 30;
+  const shore = (w: World) => {
+    let n = 0;
+    for (let i = 0; i < CELLS; i += 97) if (submerged(w, i)) n++;
+    return n;
+  };
+  let q1 = generate(11), q2 = generate(22);
+  const mixed1: number[] = [], mixed2: number[] = [];
+  for (let t = 0; t < days; t++) {
+    mixed1.push(shore(q1));
+    mixed2.push(shore(q2));   // same tick, different world: the trap
+    q1 = step(q1).world;
+    q2 = step(q2).world;
+  }
+  let r1 = generate(11), r2 = generate(22);
+  const lone1: number[] = [], lone2: number[] = [];
+  for (let t = 0; t < days; t++) { lone1.push(shore(r1)); r1 = step(r1).world; }
+  for (let t = 0; t < days; t++) { lone2.push(shore(r2)); r2 = step(r2).world; }
+  assert.deepStrictEqual(mixed1, lone1, "a world's coastline must not depend on who asked before it");
+  assert.deepStrictEqual(mixed2, lone2, "and neither must the other one's");
+}
+
+// Three: a world off the disk steps like one that never left. The round trip
+// above compares and stops, which cannot see state that lives outside the World
+// and so does not survive packing — the kind of thing every buffer removed here
+// used to be.
+{
+  const days = 40;
+  const [live, fromMemory] = run(unpack(pack(a)), days);
+  const [resumed, fromDisk] = run(unpack(pack(a)), days);
+  same(pack(resumed), pack(live), "a world resumed from storage must step like one that never left");
+  assert.deepStrictEqual(fromDisk, fromMemory, "and write the same history doing it");
+}
+
+// Four: handing `slump` a coastline and letting it draw its own are the same
+// rule. `step` always passes one; every test below calls it without. Without
+// this line the path the real tick takes is only ever exercised through a whole
+// day, where a fault in it has a hundred other things to hide behind.
+{
+  const one = generate(77), two = generate(77);
+  const told = slump(one);
+  const same2 = slump(two, coastline(two));
+  same(pack(one), pack(two), "slump must not care who drew the coastline");
+  assert.deepStrictEqual(told, same2, "nor must what it writes down");
+}
 
 const after = count(a);
 const mean = (w: ReturnType<typeof generate>) => w.veg.reduce((s, v) => s + v, 0) / CELLS;

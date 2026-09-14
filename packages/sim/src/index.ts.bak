@@ -245,18 +245,17 @@ export function sea(tick: number, seed: number): number {
 // a Caspian, labelled and filled as though it were still open water.
 //
 // Eight-connected, because water runs to any of the eight neighbours — the same
-// reason a river is traced that way. Drawn at most twice in a day, and drawn
-// afresh each time rather than cached: once for the rain, which reads the land
-// as it stood at dawn, and again after creep and slope failure have moved it,
-// because those are the only rules that move ground and the flood surface is
-// taken after them too. Which of the two a rule gets is in its arguments.
+// reason a river is traced that way. Drawn at most twice in a day and cached in
+// between, so nothing in a tick depends on how far through the tick it is
+// asked: once for the rain, which reads the land as it stood at dawn, and again
+// after creep and slope failure have moved it, because those are the only rules
+// that move ground and the flood surface is taken after them too.
 //
-// ponytail: a fill over every cell, 0.70ms against an ordinary tick — about a
-// twentieth of it, and twice that on the day the drainage redraws. The
+// ponytail: a fill over every cell, every day, for 8.6% of the tick. The
 // coastline is a slow fact like `flow` is, so this could ride the drain pass
-// every 64 days instead and cost a sixty-fourth as much — at the price of a
+// every 64 days instead and cost a sixty-fourth of that — at the price of a
 // mask up to 64 days stale, and of a second rule about when it is valid. Worth
-// it when the tick rate or the burst size makes it hurt, and not before.
+// it when the tick rate or the burst size makes 8.6% hurt, and not before.
 /** Which cells the open sea reaches. One per cell, 1 for sea. */
 export type Coast = Uint8Array;
 
@@ -268,9 +267,11 @@ export type Coast = Uint8Array;
  * afternoon's flood as open sea — the mask said water, the heights said dam,
  * and the two came from different halves of the same day.
  *
- * Runs once on most days and twice on the one day in 64 the drainage redraws,
- * which is the only day anything moves the ground. Cost and the case for
- * cutting it are with `RIVER_EVERY`, where the rest of that decision lives.
+ * ponytail: a fill over every cell, and it runs twice a day. The coastline is
+ * a slow fact like `flow` is, so it could ride the drain pass every 64 days
+ * instead — at the price of a mask up to 64 days stale, and of a second rule
+ * about when it is valid. Worth it when the tick rate or the burst size makes
+ * it hurt, and not before.
  */
 export function coastline(w: World): Coast {
   const level = sea(w.tick, w.seed);
