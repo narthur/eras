@@ -7,6 +7,10 @@
     "noEmit": true,
     "lib": ["ES2022"],
     "types": ["node"],
+    // vitest pulls in tinybench, whose .d.ts wants DOMHighResTimeStamp. Skipped
+    // rather than adding "DOM" to lib: this package is a pure state machine with
+    // no I/O, and lib DOM would quietly let someone reach for `document` in it.
+    "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
   "include": ["src"]

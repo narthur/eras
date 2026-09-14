@@ -3,11 +3,17 @@
   "version": "0.0.0",
   "type": "module",
   "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "test": "node --experimental-strip-types --no-warnings src/test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "bench": "node --experimental-strip-types --no-warnings src/bench.ts",
     "character": "node --experimental-strip-types --no-warnings src/character.ts"
   },
-  "devDependencies": { "typescript": "^5.6.0" }
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.0"
+  }
 }
