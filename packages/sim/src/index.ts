@@ -27,29 +27,45 @@ const STORMS = 8;   // the long-run ratio of dry days to wet at a given place
 const PATCH = 8;    // cells across a patch of weather
 const DRIFT = 2;    // days for the front to move on by one patch
 const WET = 645;    // above this the front is raining, in thousandths
+const VEER = 400;   // days for the storm track to swing north and back again
+const SWAY = 3;     // patches it wanders either side of its mean latitude
 const SPAN = SIZE / PATCH + 2;
 const sky = new Int32Array(SPAN * SPAN);   // the front, on its coarse lattice
+let slideX = 0, slideY = 0;                // where in it today is read from
 
-/** Draws today's weather front and returns how far it has drifted into it. */
-function fronts(w: World): number {
+/** Draws today's weather front and fixes where on it the country sits. */
+function fronts(tick: number, seed: number) {
   // Negative on purpose. A positive tick term reads the field at
   // x/PATCH + tick/DRIFT, which walks the pattern toward smaller x — west,
   // into the weather instead of along with it. The wind here comes from the
   // north-west, so the front has to cross eastward: PATCH/DRIFT cells a day.
-  const off = -w.tick / DRIFT;
-  const base = Math.floor(off);
+  const offX = -tick / DRIFT;
+  // The track wanders. Without this the weather only ever moves along x, so a
+  // cell and its neighbour due east take the same path through the field a few
+  // days apart: over years they collect the same rain, and the country dries
+  // and greens in latitude bands a patch tall. Any drift that is the same
+  // everywhere freezes whatever lies along it — the cure is not a different
+  // heading but a heading that changes, so each cell traces a ribbon through
+  // the weather instead of a line. A triangle rather than a sine because the
+  // sim must land on the same bit everywhere it runs, and Math.sin need not.
+  const lap = tick % VEER;
+  const climb = lap < VEER / 2 ? lap : VEER - lap;
+  const offY = (climb * 4 * SWAY) / VEER - SWAY;
+  const baseX = Math.floor(offX), baseY = Math.floor(offY);
   for (let ny = 0; ny < SPAN; ny++) {
     for (let nx = 0; nx < SPAN; nx++) {
-      sky[ny * SPAN + nx] = (hash2(nx + base, ny, w.seed + 7717) * 1000) | 0;
+      sky[ny * SPAN + nx] =
+        (hash2(nx + baseX, ny + baseY, seed + 7717) * 1000) | 0;
     }
   }
-  return off - base;
+  slideX = offX - baseX;
+  slideY = offY - baseY;
 }
 
 /** How hard it is raining at a cell, in thousandths of a storm. */
-function falling(i: number, slide: number): number {
-  const px = (i % SIZE) / PATCH + slide, ix = px | 0, fx = px - ix;
-  const py = ((i / SIZE) | 0) / PATCH, iy = py | 0, fy = py - iy;
+function falling(i: number): number {
+  const px = (i % SIZE) / PATCH + slideX, ix = px | 0, fx = px - ix;
+  const py = ((i / SIZE) | 0) / PATCH + slideY, iy = py | 0, fy = py - iy;
   const o = iy * SPAN + ix;
   const top = sky[o] + (sky[o + 1] - sky[o]) * fx;
   const low = sky[o + SPAN] + (sky[o + SPAN + 1] - sky[o + SPAN]) * fx;
@@ -58,9 +74,25 @@ function falling(i: number, slide: number): number {
   // stopping at a line, and so a front brings a rising and falling of it.
   return here < WET ? 0 : Math.min(1000, (here - WET) * 5);
 }
+
+/**
+ * Today's rain over the whole map, in thousandths of a storm. Exported so the
+ * weather can be asked whether it has a preferred direction without simulating
+ * a world to look at the trees, which is where the last such fault was found
+ * and much too late.
+ *
+ * Leaves the lattice drawn for the tick and seed asked for, not for any world
+ * in hand. That is safe only because `falling` is read nowhere but inside
+ * `step`, which draws the front itself first. Keep it that way.
+ */
+export function storms(tick: number, seed: number, out: Int32Array): void {
+  fronts(tick, seed);
+  for (let i = 0; i < CELLS; i++) out[i] = falling(i);
+}
+
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
                   // 700mm a year, which is what a temperate pond loses
-export const RULE_VERSION = 13;
+export const RULE_VERSION = 14;
 
 export type World = {
   seed: number;
@@ -990,7 +1022,7 @@ export function step(w: World): void {
   if (w.tick > 0 && notchOf(level) !== notchOf(sea(w.tick - 1, w.seed))) {
     note(w, "sea", -1, (level / 1000) | 0);
   }
-  const slide = fronts(w);
+  fronts(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
     if (!submerged(w, i)) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
@@ -1013,7 +1045,7 @@ export function step(w: World): void {
       // dry and still have rivers in it. Drawn for a patch of country rather
       // than a cell, because weather arrives as fronts.
       const fell = (((rain[i] * wet) / 100) | 0) >> 4;
-      const pour = falling(i, slide);
+      const pour = falling(i);
       if (pour > 0) {
         const drop = (fell * STORMS * pour) / 1000 | 0;
         const was = water[i];

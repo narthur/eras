@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, storms, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -116,6 +116,49 @@ assert.ok(windward > lee * 1.25,
 // the growth rules were tuned for it, however the terrain moves underneath
 const meanRain = rainSum / landN;
 assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain.toFixed(0)}`);
+
+// The weather must not have a latitude. This is the one fault in the sim so far
+// that no number caught and a person did, by looking at the map and saying the
+// forests were growing in rows. They were: the front drifted along x and along
+// nothing else, so every cell in a row traced the same straight line through
+// the weather field a few days apart and collected the same rain over the
+// years. Long-run rainfall became a function of y alone, in bands a patch tall,
+// frozen for the life of the world, and neighbour-seeded growth printed them.
+//
+// Measured here and not on the trees on purpose. Forest run lengths were tried
+// first and are nearly blind to it — one seed in three separated, and one
+// separated the wrong way — because by the time rain has passed through soil,
+// a growth threshold and fire it is a shadow of the fault rather than the
+// fault. Asked of the rain directly, with no world to simulate, every seed
+// reads 20 broken against 0.4 whole, and the run takes a moment.
+//
+// Row spread against column spread, both relative to the mean so the units
+// cancel. Never exactly 1: the wander averages along y, which smooths row to
+// row a little below column to column. The bar is only there to catch a return
+// to banding, which is a twentyfold departure and not a subtle one.
+{
+  const DAYS = 1000;
+  const acc = new Float64Array(CELLS), today = new Int32Array(CELLS);
+  for (let t = 0; t < DAYS; t++) {
+    storms(t, 1234, today);
+    for (let i = 0; i < CELLS; i++) acc[i] += today[i];
+  }
+  const spread = (outer: number, inner: number) => {
+    let mu = 0, out = 0;
+    const means: number[] = [];
+    for (let x = 0; x < SIZE; x++) {
+      let sum = 0;
+      for (let y = 0; y < SIZE; y++) sum += acc[x * outer + y * inner];
+      means.push(sum / SIZE);
+      mu += sum / SIZE / SIZE;
+    }
+    for (const m of means) out += (m - mu) ** 2 / SIZE / (mu * mu);
+    return out;
+  };
+  const [rows, cols] = [spread(SIZE, 1), spread(1, SIZE)];
+  assert.ok(rows < cols * 3,
+    `rain must not band by latitude: row spread ${(rows * 1e4).toFixed(1)} against column ${(cols * 1e4).toFixed(1)}`);
+}
 
 // Fire, on a world already grown over: rare enough that the ordinary run above
 // sees none, so this one starts mature. Deterministic, so it either burns for
