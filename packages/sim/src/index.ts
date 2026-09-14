@@ -424,8 +424,6 @@ function* neighbours(i: number) {
   }
 }
 
-const order = new Int32Array(CELLS);
-const height = new Int32Array(CELLS);
 
 // Fire is the only thing that happens to a world that has finished growing.
 // Without it the map is done the day the last cell matures; with it the land
@@ -445,10 +443,6 @@ const FUEL = 2000;             // canopy below this will not carry a fire at all
 const DRY = 40;                // percent of root-zone moisture below which
                                // nothing is holding the fire back but the fuel
 const BURN_CAP = 6000;         // cells: a backstop, not the rule. See `catches`
-const front = new Int32Array(CELLS);
-const queued = new Int32Array(CELLS);   // stamped, so a cell joins the edge once
-let burning = 0;
-const fires: number[] = [];
 
 /**
  * Whether a cell takes fire when the flames reach it. This is the whole of what
@@ -487,21 +481,24 @@ function catches(w: World, i: number): number {
 
 // Burns outward from the strike through anything dry enough to carry it.
 //
-// Nothing joins the edge twice — the stamp sees to that — so the fuel check at
+// Nothing joins the edge twice — `queued` sees to that — so the fuel check at
 // the top of the loop is not there to weed out duplicates any more, as it was
-// before the stamp existed. What it still catches is the strike itself, which
-// goes on the edge unconditionally: `burn` is exported now, and a caller may
-// strike bare ground.
+// before. What it still catches is the strike itself, which goes on the edge
+// unconditionally: `burn` is exported, and a caller may strike bare ground.
 //
-// ponytail: the stamp is a counter into an Int32Array, so after two thousand
-// million fires it wraps and stops matching. That is five thousand million
-// centuries at the rate this world burns. Clear `queued` and start the counter
-// again if anything ever gets close.
+// Both arrays are made per fire and thrown away with it. They used to be module
+// -level and shared, which meant `queued` could not simply hold a flag — it
+// held a stamp from a counter that rose with every fire ever lit, because
+// clearing 65,536 cells per strike was the thing being avoided. That counter
+// wrapped after two thousand million fires, which was five thousand million
+// centuries away and still a thing that had to be written down and reasoned
+// about. A fresh array is already zero, so the flag is just a flag.
 export function burn(w: World, at: number): number {
   const { veg, water, soil } = w;
+  const front = new Int32Array(CELLS);
+  const queued = new Uint8Array(CELLS);
   let n = 0, burnt = 0;
-  burning++;
-  queued[at] = burning;
+  queued[at] = 1;
   front[n++] = at;
   // The next cell to catch is any cell on the edge, not the oldest or the
   // newest. Taking the newest sends the fire down one diagonal and scars the
@@ -524,7 +521,7 @@ export function burn(w: World, at: number): number {
       // Once each. The edge used to hold a cell once per side it was reachable
       // from, which gave the well-connected middle of a fire several times the
       // chance of being drawn next and pulled the shape inward.
-      if (veg[j] >= FUEL && queued[j] !== burning) { queued[j] = burning; front[n++] = j; }
+      if (veg[j] >= FUEL && queued[j] === 0) { queued[j] = 1; front[n++] = j; }
     }
   }
   return burnt;
@@ -837,12 +834,15 @@ const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
 // gives a median of ten metres and barely one a year over the bar. The rivers
 // have to cut before there is much for them to undercut.
 const LOUD = 40;
-const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
 export function slump(w: World, coast: Coast = coastline(w)): Event[] {
   const { elev, soil, water, veg, flow } = w;
   const told: Event[] = [];
-  slides.length = 0;
+  // Face, channel and rock, decided before any of it moves, three numbers to a
+  // slide. Collected first and applied after, so a slide that ran as it was
+  // found could not bury a channel a later cell was still measuring itself
+  // against — the reason this is two loops and not one.
+  const slides: number[] = [];
   for (let i = 0; i < CELLS; i++) {
     if (flow[i] <= DAMS) continue;
     const here = elev[i] * 100 + soil[i];
@@ -904,9 +904,6 @@ export function slump(w: World, coast: Coast = coastline(w)): Event[] {
   return told;
 }
 
-const was = new Uint16Array(CELLS);   // the soil as it stood when the pass began
-const side = new Int32Array(8);       // where this cell is shedding to
-const share = new Int32Array(8);      // and how much it would send each way
 
 function crawl(w: World, coast: Coast) {
   const { elev, soil, veg } = w;
@@ -915,7 +912,12 @@ function crawl(w: World, coast: Coast) {
   // and a cell can pass on soil that only arrived this pass, which it can only
   // do from the side the scan came from — creep would run faster downhill to
   // the south-east than to the north-west, for no reason but the loop order.
-  was.set(soil);
+  // The soil as it stood when the pass began. Creep has to read one surface and
+  // write another, or a cell is fed by a neighbour that already crept this
+  // morning and the hillside walks in whichever direction the loop runs.
+  const was = Uint16Array.from(soil);
+  const side = new Int32Array(8);    // where this cell is shedding to
+  const share = new Int32Array(8);   // and how much it would send each way
   for (let i = 0; i < CELLS; i++) {
     const have = was[i];
     const here = elev[i] * 100 + have;
@@ -1142,7 +1144,10 @@ export function step(prev: World): Day {
   const { elev, soil, water, veg, rain } = w;
   const events: Event[] = [];
   const day = ledger();
-  fires.length = 0;
+  // Where lightning struck, collected as the growth loop runs and lit after it.
+  // Lighting them where they are found would let a fire spread into cells that
+  // had not grown yet today, and the rules would depend on the loop order.
+  const fires: number[] = [];
   // Where the water goes, as against where today's water is. Rare, and pinned
   // to the day rather than to how long this copy of the world has been awake.
   // Also on the first tick under new rules, since a world that arrives carrying
@@ -1165,6 +1170,11 @@ export function step(prev: World): Day {
     events.push(happening(w, "sea", -1, (level / 1000) | 0));
   }
   const sky = fronts(w.tick, w.seed);
+  // The surface the runoff reads, and the order it reads it in. Both fill as
+  // the rain loop below runs and are used by the pass after it, so they are
+  // made here rather than inside either.
+  const height = new Int32Array(CELLS);
+  const order = new Int32Array(CELLS);
   for (let i = 0; i < CELLS; i++) {
     if (coast[i] === 0) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
@@ -1241,7 +1251,7 @@ export function step(prev: World): Day {
     height[lowest] = elev[lowest] * 100 + soil[lowest] + water[lowest];
   }
 
-  dawn.set(veg);   // the canopy every cell is seeded from, before any of it grows
+  const dawn = Uint16Array.from(veg);   // the canopy every cell is seeded from, before any of it grows
   for (let i = 0; i < CELLS; i++) {
     // The sea is a sink: it refills to its own level and swallows what arrives.
     // Only where it has actually reached, though — filling every low cell put
@@ -1295,7 +1305,7 @@ export function step(prev: World): Day {
     // This is the term that can join two woods into one: the rate bonus alone
     // only got a cell to its own ceiling faster, and a ceiling set by rainfall
     // is why six hundred separate woods never became six.
-    const cap = carry(falls, s, damp) + SHELTER * near(i);
+    const cap = carry(falls, s, damp) + SHELTER * near(dawn, i);
     let d: number;
     if (excess > 1200) d = -20;              // drowned
     else if (s < 80) d = -5;                 // bare rock
@@ -1350,9 +1360,7 @@ const SHELTER = 450;     // canopy a seeding neighbour adds to what the ground
                          // would leave just short of forest becomes forest inside
                          // a wood, and a desert cell stays desert whatever stands
                          // around it.
-const dawn = new Uint16Array(CELLS);
-
-function near(i: number): number {
+function near(dawn: Uint16Array, i: number): number {
   const x = i % SIZE, y = (i / SIZE) | 0;
   const x0 = x > 0 ? -1 : 0, x1 = x < SIZE - 1 ? 1 : 0;
   const y0 = y > 0 ? -SIZE : 0, y1 = y < SIZE - 1 ? SIZE : 0;
@@ -1441,12 +1449,22 @@ export type Feature = { kind: FeatureKind; size: number; x: number; y: number };
 export const FEATURE_MIN: Record<FeatureKind, number> =
   { island: 8, lake: 4, river: 10, forest: 300, range: 16 };
 
-const seen = new Int32Array(CELLS);
-const queue = new Int32Array(CELLS);
-const kindAt = new Uint8Array(CELLS);
-let pass = 0;   // stamped into `seen`, so it never needs clearing
-
 export function features(w: World, min = FEATURE_MIN): Feature[] {
+  // All three are made here and die here. `seen` is stamped rather than cleared
+  // between the five kinds — one array, five passes — which is worth a counter
+  // when the alternative is clearing 65,536 cells five times. It starts at zero
+  // because it is new, so the stamp cannot be mistaken for a previous call's.
+  const seen = new Int32Array(CELLS);
+  const queue = new Int32Array(CELLS);
+  const kindAt = new Uint8Array(CELLS);
+  let pass = 0;
+  const visit = (i: number, belongs: (i: number) => boolean, tail: number): number => {
+    if (seen[i] === pass || !belongs(i)) return tail;
+    seen[i] = pass;
+    queue[tail] = i;
+    return tail + 1;
+  };
+
   for (let i = 0; i < CELLS; i++) kindAt[i] = biome(w, i);
   // Connectivity follows whatever made the thing. Water runs to any of the
   // eight neighbours, so a river is a diagonal staircase and reads as a row of
@@ -1490,11 +1508,4 @@ export function features(w: World, min = FEATURE_MIN): Feature[] {
     }
   }
   return out.sort((a, b) => b.size - a.size || a.y - b.y || a.x - b.x);
-}
-
-function visit(i: number, belongs: (i: number) => boolean, tail: number): number {
-  if (seen[i] === pass || !belongs(i)) return tail;
-  seen[i] = pass;
-  queue[tail] = i;
-  return tail + 1;
 }
