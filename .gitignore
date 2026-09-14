@@ -2,3 +2,9 @@ node_modules
 dist
 .wrangler
 .dev.vars
+
+# scratch from in-place edits (sed -i.bak) and hand-rolled snapshots.
+# git already keeps every version of everything; a .bak is a stale duplicate
+# that outlives its reason and turns up in greps.
+*.bak
+.static-analysis
