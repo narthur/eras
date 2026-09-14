@@ -249,15 +249,32 @@ export function sea(tick: number, seed: number): number {
 // every 64 days instead and cost a sixty-fourth of that — at the price of a
 // mask up to 64 days stale, and of a second rule about when it is valid. Worth
 // it when the tick rate or the burst size makes 8.6% hurt, and not before.
-const reached = new Uint8Array(CELLS);
-const shore = new Int32Array(CELLS);
-let chartOf: World | undefined;   // by identity: two worlds can share a tick
-let chartAt = -1;                 // and a seed and not share a coastline
+/** Which cells the open sea reaches. One per cell, 1 for sea. */
+export type Coast = Uint8Array;
 
-function chart(w: World) {
+/**
+ * Draws the coastline on the ground as it stands. A value, handed to whoever
+ * asked: every rule in the tick is given the mask it should be reading rather
+ * than fetching it from a cache that may or may not still describe the ground
+ * under it. That cache is how a bay dammed in the morning got seeded into the
+ * afternoon's flood as open sea — the mask said water, the heights said dam,
+ * and the two came from different halves of the same day.
+ *
+ * ponytail: a fill over every cell, and it runs twice a day. The coastline is
+ * a slow fact like `flow` is, so it could ride the drain pass every 64 days
+ * instead — at the price of a mask up to 64 days stale, and of a second rule
+ * about when it is valid. Worth it when the tick rate or the burst size makes
+ * it hurt, and not before.
+ */
+export function coastline(w: World): Coast {
   const level = sea(w.tick, w.seed);
   const under = (i: number) => w.elev[i] * 100 + w.soil[i] <= level;
-  reached.fill(0);
+  // Mutable inside, and only inside: a flood fill is a queue and a visited set
+  // by its nature, and there is no way to express one as a fold over 65,536
+  // cells that does not rebuild both on every pop. Neither array outlives this
+  // call, and the mask is the only thing that leaves it.
+  const reached: Coast = new Uint8Array(CELLS);
+  const shore = new Int32Array(CELLS);
   let head = 0, tail = 0;
   // The rim of the map is open sea wherever it is under the water. Worldgen
   // forces the border to the floor, so in practice the whole rim qualifies.
@@ -281,8 +298,7 @@ function chart(w: World) {
       }
     }
   }
-  chartOf = w;
-  chartAt = w.tick;
+  return reached;
 }
 
 /**
@@ -292,9 +308,28 @@ function chart(w: World) {
  * cells around the shore to begin with, where the weathered soil already
  * stands above the water.
  */
+let chartOf: World | undefined;   // by identity: two worlds can share a tick
+let chartAt = -1;                 // and a seed and not share a coastline
+let charted: Coast = new Uint8Array(0);
+
+/**
+ * For readers outside the tick — `biome`, `features`, the tests, anything
+ * looking at a world that is sitting still. Memoised on the world and the day,
+ * because a caller classifying all 65,536 cells should pay for one fill.
+ *
+ * Nothing inside `step` uses this, and that is the point. The rules are handed
+ * a `Coast` instead, so the cache can never be read beside ground that has
+ * moved since it was drawn: within a day the ground moves twice, and this key
+ * cannot see either. Outside a day it is not moving at all, which is exactly
+ * when memoising on it is safe.
+ */
 export function submerged(w: World, i: number): boolean {
-  if (chartOf !== w || chartAt !== w.tick) chart(w);
-  return reached[i] === 1;
+  if (chartOf !== w || chartAt !== w.tick) {
+    charted = coastline(w);
+    chartOf = w;
+    chartAt = w.tick;
+  }
+  return charted[i] === 1;
 }
 
 // ---- worldgen -------------------------------------------------------------
@@ -364,7 +399,7 @@ export function generate(seed: number): World {
   // Rainfall is the wind's answer to the shape of the land, so it is asked here
   // too rather than left empty until the first tick. There used to be a noise
   // field in its place, which nothing has read since the wind arrived.
-  winds(world);
+  winds(world, coastline(world));
   return world;
 }
 
@@ -612,7 +647,7 @@ const TARGET = 135;     // mean rainfall over land, to hold the world's tuning
 const wet = new Int32Array(CELLS);
 const blur = new Int32Array(CELLS);
 
-function winds(w: World) {
+function winds(w: World, coast: Coast) {
   const { elev, soil, rain } = w;
   const surface = (i: number) => elev[i] * 100 + soil[i];
   wet.fill(0);
@@ -623,7 +658,7 @@ function winds(w: World) {
       const first = stride === 1 ? line * SIZE : line;
       for (let k = 0; k < SIZE; k++) {
         const i = first + k * stride;
-        if (submerged(w, i)) {
+        if (coast[i] === 1) {
           held = Math.min(HOLD, held + SEA_GAIN);
           continue;
         }
@@ -661,7 +696,7 @@ function winds(w: World) {
     }
   }
   let land = 0, raw = 0;
-  for (let i = 0; i < CELLS; i++) if (!submerged(w, i)) { land++; raw += wet[i]; }
+  for (let i = 0; i < CELLS; i++) if (coast[i] === 0) { land++; raw += wet[i]; }
   if (land === 0) return;
   // The windward face of a coastal range takes an absurd share of the sweep —
   // the air arrives full and gives up a fifth of it in one cell — so the top is
@@ -679,7 +714,7 @@ function winds(w: World) {
   for (let pass = 0; pass < 2; pass++) {
     let sum = 0;
     for (let i = 0; i < CELLS; i++) {
-      if (submerged(w, i)) continue;
+      if (coast[i] === 1) continue;
       sum += clamp(BASE + (((wet[i] * scale) / 1000) | 0), 20, 255);
     }
     const want = (TARGET - BASE) * land;
@@ -770,14 +805,14 @@ const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
 const LOUD = 40;
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 
-export function slump(w: World): Event[] {
+export function slump(w: World, coast: Coast = coastline(w)): Event[] {
   const { elev, soil, water, veg, flow } = w;
   const told: Event[] = [];
   slides.length = 0;
   for (let i = 0; i < CELLS; i++) {
     if (flow[i] <= DAMS) continue;
     const here = elev[i] * 100 + soil[i];
-    if (submerged(w, i)) continue;
+    if (coast[i] === 1) continue;
     // The highest slope standing over this reach, and it has to be wet. Ground
     // holding all it can is ground with no friction left, which is why real
     // slopes fail in the wet and not in the drought — and it ties the one rule
@@ -839,7 +874,7 @@ const was = new Uint16Array(CELLS);   // the soil as it stood when the pass bega
 const side = new Int32Array(8);       // where this cell is shedding to
 const share = new Int32Array(8);      // and how much it would send each way
 
-function crawl(w: World) {
+function crawl(w: World, coast: Coast) {
   const { elev, soil, veg } = w;
   const level = sea(w.tick, w.seed);
   // Read from a copy, write to the live ground. Read and write the same array
@@ -850,7 +885,7 @@ function crawl(w: World) {
   for (let i = 0; i < CELLS; i++) {
     const have = was[i];
     const here = elev[i] * 100 + have;
-    if (have === 0 || submerged(w, i)) continue;
+    if (have === 0 || coast[i] === 1) continue;
     let n = 0, demand = 0;
     for (const j of neighbours(i)) {
       // A neighbour under the sea is the shoreline, not its own bed: soil that
@@ -863,7 +898,7 @@ function crawl(w: World) {
       // the floor under that — but only where the sea is. Into a dry hollow the
       // hillside sheds onto the hollow's own floor, however far below the
       // datum that floor happens to lie.
-      const floor = submerged(w, j) ? level : there;
+      const floor = coast[j] === 1 ? level : there;
       let fall = here - (floor > there ? floor : there);
       if (fall <= 0) continue;
       // And past sixty metres in one cell it is a face rather than a hillside.
@@ -894,25 +929,33 @@ function crawl(w: World) {
 }
 
 /** Redraws the drainage network into `flow`, in rain per cell per day. */
-function drain(w: World): Event[] {
+/**
+ * Hands back what the slides buried and the coastline as it stands after them,
+ * because the caller needs both and the day is not over.
+ */
+function drain(w: World): { events: Event[]; coast: Coast } {
   const { elev, soil, rain, flow } = w;
   const wet = weather(w.tick, w.seed);
-  winds(w);        // where the rain falls, given the shape of the land today
-  crawl(w);              // before the flood, so it fills the surface creep just made
-  const told = slump(w); // and before it too, so a new dam ponds on the pass it forms
+  const dawn = coastline(w);   // the land as it stood before anything moved it
+  winds(w, dawn);              // where the rain falls, given the shape of it
+  crawl(w, dawn);              // before the flood, so it fills the creep just made
+  const told = slump(w, dawn); // and before that, so a new dam ponds on its own pass
   // Those two are the only things in a day that move the ground, and slump is
   // the one rule that can seal a channel. So the coastline is redrawn here, on
   // the ground as it now stands: the loop below takes each cell's height live
-  // and its sea-or-not from the chart, and reading one from after the slide and
+  // and its sea-or-not from the mask, and reading one from after the slide and
   // the other from before it is how a bay that was dammed this morning gets
   // seeded into the flood as open sea at the height of its own new dam.
-  chartAt = -1;
+  //
+  // Two masks, both named, both passed. It used to be one cache invalidated by
+  // hand between the two halves, and forgetting that line was a real bug.
+  const coast = coastline(w);
   flow.fill(0);
   load.fill(0);   // nothing is in transit between passes, so a restart is clean
   heapN = 0;
   // The sea is the outlet and the only thing already at its final height.
   for (let i = 0; i < CELLS; i++) {
-    if (!submerged(w, i)) { fill[i] = FAR; continue; }
+    if (coast[i] === 0) { fill[i] = FAR; continue; }
     fill[i] = elev[i] * 100 + soil[i];
     heapPush(i);
   }
@@ -950,7 +993,7 @@ function drain(w: World): Event[] {
     to[i] = best;
     // What is falling now, not what the map says: a river is thinner in a dry
     // decade. The pattern is the land's and does not move; only the size does.
-    acc[i] = submerged(w, i) ? 0 : ((rain[i] * wet) / 100) | 0;
+    acc[i] = coast[i] === 1 ? 0 : ((rain[i] * wet) / 100) | 0;
   }
   // Highest first, so everything upstream of a cell has already reported in —
   // its drainage, and the sediment it is carrying.
@@ -958,9 +1001,9 @@ function drain(w: World): Event[] {
     const i = drop[k];
     if (to[i] >= 0) acc[to[i]] += acc[i];
     flow[i] = Math.min(65535, acc[i] >> 6);
-    carve(w, i);
+    carve(w, i, coast);
   }
-  return told;
+  return { events: told, coast };
 }
 
 // What a river can carry past a cell: its discharge times the steepness of the
@@ -973,12 +1016,12 @@ const CARRY = 260;      // the divisor that sets how fast the land wears down
 const BITE = 40;        // decimetres of bedrock one pass may cut, so no cliff
 const load = new Int32Array(CELLS);   // sediment in transit, millimetres
 
-function carve(w: World, i: number) {
+function carve(w: World, i: number, coast: Coast) {
   const { elev, soil, veg } = w;
   const j = to[i];
   // The sea is where everything lands: no slope, no capacity, and the river
   // has arrived. Whatever it was still carrying builds up at the mouth.
-  if (j < 0 || submerged(w, i)) {
+  if (j < 0 || coast[i] === 1) {
     // A cell still under the sea holds at most fifty metres of water above it,
     // so there is always room in the soil for what one pass can bring; the
     // clamp is a floor under an arithmetic accident, not a real case.
@@ -1068,7 +1111,15 @@ export function step(prev: World): Day {
   // to the day rather than to how long this copy of the world has been awake.
   // Also on the first tick under new rules, since a world that arrives carrying
   // some older idea of what `flow` meant should not draw rivers from it.
-  if (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) events.push(...drain(w));
+  const dug = (w.tick % RIVER_EVERY === 0 || w.ruleVersion !== RULE_VERSION) ? drain(w) : undefined;
+  if (dug) events.push(...dug.events);
+  // The mask the rest of the day reads. On a drain day it is the one drawn
+  // after the ground moved, which is what the old cache would have held; on
+  // every other day nothing has moved the ground since yesterday, so a fresh
+  // one is the same answer. Carried to the end of the tick deliberately: the
+  // weathering below adds soil, and taking the coastline again after it would
+  // be a different rule than the one this world has always run.
+  const coast = dug ? dug.coast : coastline(w);
 
   // rain, then evaporation. Vegetation holds moisture back.
   const wet = weather(w.tick, w.seed);
@@ -1079,7 +1130,7 @@ export function step(prev: World): Day {
   }
   const [slideX, slideY] = fronts(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
-    if (!submerged(w, i)) {
+    if (coast[i] === 0) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
       // about 3 metres a year on the median cell, where an eighth was seven
       // metres — wetter than any rainforest — and
@@ -1162,7 +1213,7 @@ export function step(prev: World): Day {
     // besides, since this is an assignment and not a transfer. A basin walled
     // off below sea level now takes rain like any other basin and ponds by the
     // same rules, which is what a Caspian is.
-    if (submerged(w, i)) {
+    if (coast[i] === 1) {
       const stood = water[i];
       water[i] = Math.max(0, level - (elev[i] * 100 + soil[i]));
       day.tide += water[i] - stood;
