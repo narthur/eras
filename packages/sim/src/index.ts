@@ -33,7 +33,12 @@ const WET = 645;    // above this the front is raining, in thousandths
 export const VEER = 400;   // days for the storm track to swing north and back again
 const SWAY = 3;     // patches it wanders either side of its mean latitude
 const SPAN = SIZE / PATCH + 2;
-const sky = new Int32Array(SPAN * SPAN);   // the front, on its coarse lattice
+
+/**
+ * Today's weather front: the coarse lattice it is drawn on, and how far into it
+ * the country sits, east and north.
+ */
+export type Sky = { lattice: Int32Array; slideX: number; slideY: number };
 
 /**
  * Where the storm track sits today, north or south of its mean, in patches.
@@ -54,7 +59,7 @@ export function wave(tick: number): number {
  * useless without it, and a reader that has to be told the order to call two
  * functions in is one refactor away from getting it wrong.
  */
-function fronts(tick: number, seed: number): [number, number] {
+function fronts(tick: number, seed: number): Sky {
   // Negative on purpose. A positive tick term reads the field at
   // x/PATCH + tick/DRIFT, which walks the pattern toward smaller x — west,
   // into the weather instead of along with it. The wind here comes from the
@@ -69,22 +74,24 @@ function fronts(tick: number, seed: number): [number, number] {
   // the weather instead of a line.
   const offY = wave(tick);
   const baseX = Math.floor(offX), baseY = Math.floor(offY);
+  const lattice = new Int32Array(SPAN * SPAN);
   for (let ny = 0; ny < SPAN; ny++) {
     for (let nx = 0; nx < SPAN; nx++) {
-      sky[ny * SPAN + nx] =
+      lattice[ny * SPAN + nx] =
         (hash2(nx + baseX, ny + baseY, seed + 7717) * 1000) | 0;
     }
   }
-  return [offX - baseX, offY - baseY];
+  return { lattice, slideX: offX - baseX, slideY: offY - baseY };
 }
 
 /** How hard it is raining at a cell, in thousandths of a storm. */
-function falling(i: number, slideX: number, slideY: number): number {
+function falling(sky: Sky, i: number): number {
+  const { lattice, slideX, slideY } = sky;
   const px = (i % SIZE) / PATCH + slideX, ix = px | 0, fx = px - ix;
   const py = ((i / SIZE) | 0) / PATCH + slideY, iy = py | 0, fy = py - iy;
   const o = iy * SPAN + ix;
-  const top = sky[o] + (sky[o + 1] - sky[o]) * fx;
-  const low = sky[o + SPAN] + (sky[o + SPAN + 1] - sky[o + SPAN]) * fx;
+  const top = lattice[o] + (lattice[o + 1] - lattice[o]) * fx;
+  const low = lattice[o + SPAN] + (lattice[o + SPAN + 1] - lattice[o + SPAN]) * fx;
   const here = (top + (low - top) * fy) | 0;
   // Soft at the edges, so the rain shades off across the country rather than
   // stopping at a line, and so a front brings a rising and falling of it.
@@ -98,8 +105,8 @@ function falling(i: number, slideX: number, slideY: number): number {
  * and much too late.
  */
 export function rainfall(tick: number, seed: number, out: Int32Array): void {
-  const [slideX, slideY] = fronts(tick, seed);
-  for (let i = 0; i < CELLS; i++) out[i] = falling(i, slideX, slideY);
+  const sky = fronts(tick, seed);
+  for (let i = 0; i < CELLS; i++) out[i] = falling(sky, i);
 }
 
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
@@ -584,42 +591,68 @@ export function weather(tick: number, seed: number): number {
 
 const RIVER_EVERY = 64;
 const FAR = 0x7fffffff;
-const fill = new Int32Array(CELLS);   // the surface once every pit is full
-const to = new Int32Array(CELLS);     // the neighbour each cell drains into
-const drop = new Int32Array(CELLS);   // cells in the order the flood reached them
-const acc = new Int32Array(CELLS);    // rain gathered from everything upstream
-const heap = new Int32Array(CELLS);
-let heapN = 0;
+/**
+ * The flood's working surface, made fresh for each pass and thrown away after:
+ * what each cell fills to, the neighbour it drains into, and what the river
+ * going past it is carrying. These three are read together by everything the
+ * pass does, so they travel together rather than as three module arrays that
+ * happen to be indexed alike.
+ */
+type Flood = { fill: Int32Array; to: Int32Array; load: Int32Array };
 
-// Ties break on index, so the flood is the same flood on every machine.
-const above = (a: number, b: number) => (fill[a] !== fill[b] ? fill[a] > fill[b] : a > b);
+const flooding = (): Flood => ({
+  fill: new Int32Array(CELLS),
+  to: new Int32Array(CELLS),
+  load: new Int32Array(CELLS),   // nothing is in transit between passes
+});
 
-function heapPush(i: number) {
-  let c = heapN++;
-  heap[c] = i;
-  while (c > 0) {
-    const p = (c - 1) >> 1;
-    if (!above(heap[p], heap[c])) break;
-    const t = heap[p]; heap[p] = heap[c]; heap[c] = t;
-    c = p;
-  }
-}
-
-function heapPop(): number {
-  const top = heap[0];
-  heap[0] = heap[--heapN];
-  let p = 0;
-  for (;;) {
-    const l = p * 2 + 1, r = l + 1;
-    let m = p;
-    if (l < heapN && above(heap[m], heap[l])) m = l;
-    if (r < heapN && above(heap[m], heap[r])) m = r;
-    if (m === p) break;
-    const t = heap[p]; heap[p] = heap[m]; heap[m] = t;
-    p = m;
-  }
-  return top;
-}
+/**
+ * A binary heap of cells, lowest surface first, for the priority flood.
+ *
+ * Mutable inside, deliberately, and this is the clearest case of it in the
+ * file: a heap is an array sifted in place, it is pushed and popped 65,536
+ * times a pass, and a persistent one would allocate a fresh spine on every one
+ * of those. The array is made here and closed over, so there is exactly one
+ * heap per flood and no way to hold a stale one — which is what the module
+ * -level `heap` and `heapN` offered, reset by hand at the top of `drain`.
+ *
+ * `fill` is read live on purpose: the flood raises it as it goes, and the
+ * ordering has to see that.
+ */
+const rising = (fill: Int32Array) => {
+  const heap = new Int32Array(CELLS);
+  let n = 0;
+  // Ties break on index, so the flood is the same flood on every machine.
+  const above = (a: number, b: number) => (fill[a] !== fill[b] ? fill[a] > fill[b] : a > b);
+  return {
+    get size() { return n; },
+    push(i: number) {
+      let c = n++;
+      heap[c] = i;
+      while (c > 0) {
+        const p = (c - 1) >> 1;
+        if (!above(heap[p], heap[c])) break;
+        const t = heap[p]; heap[p] = heap[c]; heap[c] = t;
+        c = p;
+      }
+    },
+    pop(): number {
+      const top = heap[0];
+      heap[0] = heap[--n];
+      let p = 0;
+      for (;;) {
+        const l = p * 2 + 1, r = l + 1;
+        let m = p;
+        if (l < n && above(heap[m], heap[l])) m = l;
+        if (r < n && above(heap[m], heap[r])) m = r;
+        if (m === p) break;
+        const t = heap[p]; heap[p] = heap[m]; heap[m] = t;
+        p = m;
+      }
+      return top;
+    },
+  };
+};
 
 // ---- weather in the map ---------------------------------------------------
 // Where the rain falls, as against how much of it falls this decade. It used
@@ -644,13 +677,14 @@ const LOOK = 6;        // cells of upwind ground the climb is measured over
 const BASE = 60;        // rain that arrives on weather fronts, wherever you are
 const CROWN = 25;       // tenths: the most one cell may take of the mean, clipped
 const TARGET = 135;     // mean rainfall over land, to hold the world's tuning
-const wet = new Int32Array(CELLS);
-const blur = new Int32Array(CELLS);
-
 function winds(w: World, coast: Coast) {
   const { elev, soil, rain } = w;
   const surface = (i: number) => elev[i] * 100 + soil[i];
-  wet.fill(0);
+  // Both local to the sweep. `wet` is carried across the passes below — a
+  // sweep upwind, a blur, a ceiling and two scalings, each reading what the
+  // last one wrote — so it is one array written five times rather than five
+  // arrays, and neither of them leaves this function.
+  const wet = new Int32Array(CELLS);
   // `step` is the stride into the wind: one cell along the row, then one row.
   for (const stride of [1, SIZE]) {
     for (let line = 0; line < SIZE; line++) {
@@ -686,7 +720,7 @@ function winds(w: World, coast: Coast) {
   // Rain drifts. Averaging each cell with its neighbours is the cheapest
   // honest way to say so, and it keeps the map from carrying the grain of the
   // terrain it came from.
-  blur.set(wet);
+  const blur = Int32Array.from(wet);
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       const i = y * SIZE + x;
@@ -951,30 +985,32 @@ function drain(w: World): { events: Event[]; coast: Coast } {
   // hand between the two halves, and forgetting that line was a real bug.
   const coast = coastline(w);
   flow.fill(0);
-  load.fill(0);   // nothing is in transit between passes, so a restart is clean
-  heapN = 0;
+  const flood = flooding();
+  const { fill, to, load } = flood;
+  const queue = rising(fill);
   // The sea is the outlet and the only thing already at its final height.
   for (let i = 0; i < CELLS; i++) {
     if (coast[i] === 0) { fill[i] = FAR; continue; }
     fill[i] = elev[i] * 100 + soil[i];
-    heapPush(i);
+    queue.push(i);
   }
   // The flood needs somewhere to drain to. There is always sea on this map —
   // the tide reaches half the depth worldgen clamps the floor at, and the
   // border is forced to that floor — but a world with none would leave every
   // cell unvisited and every receiver pointing at nothing, so in that case the
   // lowest cell stands in as the outlet.
-  if (heapN === 0) {
+  if (queue.size === 0) {
     let low = 0;
     for (let i = 1; i < CELLS; i++) {
       if (elev[i] * 100 + soil[i] < elev[low] * 100 + soil[low]) low = i;
     }
     fill[low] = elev[low] * 100 + soil[low];
-    heapPush(low);
+    queue.push(low);
   }
+  const drop = new Int32Array(CELLS);   // cells in the order the flood reached them
   let n = 0;
-  while (heapN > 0) {
-    const i = heapPop();
+  while (queue.size > 0) {
+    const i = queue.pop();
     drop[n++] = i;
     for (const j of neighbours(i)) {
       if (fill[j] !== FAR) continue;   // already spoken for: this is the mark
@@ -982,11 +1018,12 @@ function drain(w: World): { events: Event[]; coast: Coast } {
       // A millimetre above whatever let the water out, so that a filled pit is
       // a slope rather than a plateau and the water on it knows which way to go
       fill[j] = base > fill[i] ? base : fill[i] + 1;
-      heapPush(j);
+      queue.push(j);
     }
   }
   // Downhill on the filled surface. The cell that let this one out is always
   // strictly below it, so there is always somewhere to go and it reaches the sea.
+  const acc = new Int32Array(CELLS);   // rain gathered from everything upstream
   for (let i = 0; i < CELLS; i++) {
     let best = -1, low = fill[i];
     for (const j of neighbours(i)) if (fill[j] < low) { low = fill[j]; best = j; }
@@ -1001,7 +1038,7 @@ function drain(w: World): { events: Event[]; coast: Coast } {
     const i = drop[k];
     if (to[i] >= 0) acc[to[i]] += acc[i];
     flow[i] = Math.min(65535, acc[i] >> 6);
-    carve(w, i, coast);
+    carve(w, i, coast, flood);
   }
   return { events: told, coast };
 }
@@ -1014,10 +1051,9 @@ function drain(w: World): { events: Event[]; coast: Coast } {
 // sea, because the sea has no slope and so no capacity at all.
 const CARRY = 260;      // the divisor that sets how fast the land wears down
 const BITE = 40;        // decimetres of bedrock one pass may cut, so no cliff
-const load = new Int32Array(CELLS);   // sediment in transit, millimetres
-
-function carve(w: World, i: number, coast: Coast) {
+function carve(w: World, i: number, coast: Coast, flood: Flood) {
   const { elev, soil, veg } = w;
+  const { fill, to, load } = flood;
   const j = to[i];
   // The sea is where everything lands: no slope, no capacity, and the river
   // has arrived. Whatever it was still carrying builds up at the mouth.
@@ -1128,7 +1164,7 @@ export function step(prev: World): Day {
   if (w.tick > 0 && notchOf(level) !== notchOf(sea(w.tick - 1, w.seed))) {
     events.push(happening(w, "sea", -1, (level / 1000) | 0));
   }
-  const [slideX, slideY] = fronts(w.tick, w.seed);
+  const sky = fronts(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
     if (coast[i] === 0) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
@@ -1151,7 +1187,7 @@ export function step(prev: World): Day {
       // dry and still have rivers in it. Drawn for a patch of country rather
       // than a cell, because weather arrives as fronts.
       const fell = (((rain[i] * wet) / 100) | 0) >> 4;
-      const pour = falling(i, slideX, slideY);
+      const pour = falling(sky, i);
       if (pour > 0) {
         const drop = (fell * STORMS * pour) / 1000 | 0;
         const was = water[i];
