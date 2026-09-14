@@ -690,7 +690,10 @@ const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
 // depressions worldgen leaves were a gift the world spent: 170 left by year
 // ten, 25 by year two hundred, and a single cell of standing water. With it the
 // count climbs instead — 380 by year twenty and 446 by year one hundred, with
-// 296 cells under standing water against the 53 the same world had without.
+// 296 cells under standing water at year fifty against the 53 the same world
+// had without. The year matters and is easy to leave off: the lakes are not
+// monotonic, and the same run reads 584 cells at year twenty and 130 at year
+// two hundred.
 //
 // Written from the channel rather than from the hillside, which is the whole
 // of what makes it work. Asked the obvious way round — take the steepest
@@ -731,12 +734,17 @@ const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
                           // wet precondition is intermittent and the eligible
                           // faces are few: the continent buries about forty
                           // channels a year at this figure
-// Metres of rock below which a slide is not news. Measured over three years:
-// the continent sheds about forty a year, median fifteen metres, and a record
+// Metres of rock below which a slide is not news. Measured over forty years:
+// the continent sheds about fifty a year, median fifteen metres, and a record
 // that took all of them would be a list of one kind of thing with a fire lost
 // somewhere in it. Four a year clear this bar, which is a pace that takes
 // months of watching to fill a panel rather than an afternoon. The ground still
 // moves either way — this decides what is written down, not what happens.
+//
+// Forty years and not three, which is what this said before and is long enough
+// to mislead: the young world's slides are smaller and rarer, so three years
+// gives a median of ten metres and barely one a year over the bar. The rivers
+// have to cut before there is much for them to undercut.
 const LOUD = 40;
 const slides: number[] = [];   // face, channel and rock, decided before any of it moves
 

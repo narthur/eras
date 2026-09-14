@@ -160,8 +160,10 @@ assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain
 // cancel. Two thousand days and not one thousand: the wander takes VEER days to
 // come back round, so a window of two and a half turns has not finished
 // averaging and the ratio still swings with the seed. Ten seeds run 0.64 to
-// 1.84 at a thousand days, 0.39 to 1.07 at two thousand, 0.15 to 0.42 at four —
-// it settles downward because the sway smooths along y. Five turns is enough to
+// 1.84 at a thousand days and 0.39 to 1.07 at two thousand, settling downward
+// as the sway smooths along y. Which ten seeds matters at the wide end — a
+// different ten put the four-thousand-day ceiling half again as high — so read
+// these as the shape of the thing and not as constants. Five turns is enough to
 // leave the bar real headroom without making the test slow. The bar is only
 // there to catch a return to banding, which is a twentyfold departure and not a
 // subtle one.
