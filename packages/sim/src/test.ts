@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, storms, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
+import { generate, step, pack, unpack, biome, Biome, features, submerged, carry, fills, slump, burn, chronicle, rainfall, wave, VEER, budget, puddle, sea, RULE_VERSION, CELLS, SIZE, VEG_MAX, type World } from "./index.ts";
 
 const count = (w: ReturnType<typeof generate>) => {
   const t = Array.from({ length: 8 }, () => 0);
@@ -117,6 +117,30 @@ assert.ok(windward > lee * 1.25,
 const meanRain = rainSum / landN;
 assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain.toFixed(0)}`);
 
+// The wander itself, before asking what it does to the rain. The banding check
+// below is an aggregate and a loose one: it catches the wander going missing
+// altogether and almost nothing else. Measured — a sawtooth of the same
+// amplitude that snaps back instead of folding, and a VEER ten times too long,
+// both sail through it. So the shape gets asked about directly. Stated against
+// itself rather than against SWAY, so the constants stay free to move.
+{
+  const turn = wave(VEER / 2);
+  assert.ok(turn > 0, `the track should be north of its mean at the turn, ${turn}`);
+  assert.strictEqual(wave(0), -turn, "and as far south at the start as north at the turn");
+  assert.strictEqual(wave(VEER), wave(0), "a lap should come back to where it began");
+  // A triangle folds; a sawtooth jumps. One period of steps, and the longest
+  // must be no longer than the first — which is what the fold buys and what
+  // snapping back at the wrap would break.
+  const step1 = Math.abs(wave(1) - wave(0));
+  let widest = 0;
+  for (let t = 0; t < VEER * 2; t++) {
+    widest = Math.max(widest, Math.abs(wave(t + 1) - wave(t)));
+    assert.ok(wave(t) >= wave(0) && wave(t) <= turn, `the track wandered off its range at ${t}: ${wave(t)}`);
+  }
+  assert.ok(widest <= step1 * 1.0000001,
+    `the track should fold at the turn, not snap: widest step ${widest} against ${step1}`);
+}
+
 // The weather must not have a latitude. This is the one fault in the sim so far
 // that no number caught and a person did, by looking at the map and saying the
 // forests were growing in rows. They were: the front drifted along x and along
@@ -129,20 +153,36 @@ assert.ok(meanRain > 125 && meanRain < 145, `mean rainfall drifted to ${meanRain
 // first and are nearly blind to it — one seed in three separated, and one
 // separated the wrong way — because by the time rain has passed through soil,
 // a growth threshold and fire it is a shadow of the fault rather than the
-// fault. Asked of the rain directly, with no world to simulate, every seed
-// reads 20 broken against 0.4 whole, and the run takes a moment.
+// fault. Asked of the rain directly, with no world to simulate, banded reads
+// about 20 and whole reads about 1, and the run takes a moment.
 //
 // Row spread against column spread, both relative to the mean so the units
-// cancel. Never exactly 1: the wander averages along y, which smooths row to
-// row a little below column to column. The bar is only there to catch a return
-// to banding, which is a twentyfold departure and not a subtle one.
+// cancel. Two thousand days and not one thousand: the wander takes VEER days to
+// come back round, so a window of two and a half turns has not finished
+// averaging and the ratio still swings with the seed. Ten seeds run 0.64 to
+// 1.84 at a thousand days, 0.39 to 1.07 at two thousand, 0.15 to 0.42 at four —
+// it settles downward because the sway smooths along y. Five turns is enough to
+// leave the bar real headroom without making the test slow. The bar is only
+// there to catch a return to banding, which is a twentyfold departure and not a
+// subtle one.
 {
-  const DAYS = 1000;
+  const DAYS = 2000;
+  // The one thing the wave checks above cannot see. Stated against itself, a
+  // triangle stays a valid triangle whatever its period, so a VEER ten times
+  // too long reads as correct there — and quietly leaves this window sampling a
+  // quarter of one turn, where the ratio has not begun to settle and the bar
+  // below stops meaning anything. Tie them together instead: whoever moves VEER
+  // has to come back here and re-measure.
+  assert.ok(DAYS >= VEER * 5,
+    `the banding window must cover several turns of the track: ${DAYS} days against a ${VEER}-day turn`);
   const acc = new Float64Array(CELLS), today = new Int32Array(CELLS);
   for (let t = 0; t < DAYS; t++) {
-    storms(t, 1234, today);
+    rainfall(t, 1234, today);
     for (let i = 0; i < CELLS; i++) acc[i] += today[i];
   }
+  // acc is laid out y * SIZE + x, so spread(SIZE, 1) sums across x for each y —
+  // one mean per row — and spread(1, SIZE) one mean per column. Getting the two
+  // the wrong way round would swap the names and still print plausible numbers.
   const spread = (outer: number, inner: number) => {
     let mu = 0, out = 0;
     const means: number[] = [];

@@ -19,22 +19,42 @@ export const SIZE = 256;
 export const CELLS = SIZE * SIZE;
 export const VEG_MAX = 10000;
 // Rain arrives as fronts: a field of wet and dry country that drifts east
-// across the map, soaking a swathe of it for a few days at a time. Drawn on a
-// coarse lattice once a tick and read off it smoothly, because a storm drawn
-// per patch of ground owes nothing to the patch beside it and the country ends
-// up tiled in hard eight-cell squares — which is exactly what it looked like.
+// across the map, soaking a swathe of it for a few days at a time, on a track
+// that wanders north and south as it goes. Drawn on a coarse lattice once a
+// tick and read off it smoothly, because a storm drawn per patch of ground owes
+// nothing to the patch beside it and the country ends up tiled in hard
+// eight-cell squares — which is exactly what it looked like. The wander is not
+// decoration either: a front that only ever moved along x froze the long-run
+// rainfall into latitude bands, and the forests grew in rows. See `fronts`.
 const STORMS = 8;   // the long-run ratio of dry days to wet at a given place
 const PATCH = 8;    // cells across a patch of weather
 const DRIFT = 2;    // days for the front to move on by one patch
 const WET = 645;    // above this the front is raining, in thousandths
-const VEER = 400;   // days for the storm track to swing north and back again
+export const VEER = 400;   // days for the storm track to swing north and back again
 const SWAY = 3;     // patches it wanders either side of its mean latitude
 const SPAN = SIZE / PATCH + 2;
 const sky = new Int32Array(SPAN * SPAN);   // the front, on its coarse lattice
-let slideX = 0, slideY = 0;                // where in it today is read from
 
-/** Draws today's weather front and fixes where on it the country sits. */
-function fronts(tick: number, seed: number) {
+/**
+ * Where the storm track sits today, north or south of its mean, in patches.
+ * A triangle: down to -SWAY, up to SWAY at the turn, back again by VEER. A
+ * triangle rather than a sine because the sim must land on the same bit in
+ * every engine it runs in, and Math.sin is implementation-defined where these
+ * four operations are exact.
+ */
+export function wave(tick: number): number {
+  const lap = tick % VEER;
+  const climb = lap < VEER / 2 ? lap : VEER - lap;
+  return (climb * 4 * SWAY) / VEER - SWAY;
+}
+
+/**
+ * Draws today's weather front and returns how far into it the country sits,
+ * east and north. Handed back rather than left in module state: `falling` is
+ * useless without it, and a reader that has to be told the order to call two
+ * functions in is one refactor away from getting it wrong.
+ */
+function fronts(tick: number, seed: number): [number, number] {
   // Negative on purpose. A positive tick term reads the field at
   // x/PATCH + tick/DRIFT, which walks the pattern toward smaller x — west,
   // into the weather instead of along with it. The wind here comes from the
@@ -46,11 +66,8 @@ function fronts(tick: number, seed: number) {
   // and greens in latitude bands a patch tall. Any drift that is the same
   // everywhere freezes whatever lies along it — the cure is not a different
   // heading but a heading that changes, so each cell traces a ribbon through
-  // the weather instead of a line. A triangle rather than a sine because the
-  // sim must land on the same bit everywhere it runs, and Math.sin need not.
-  const lap = tick % VEER;
-  const climb = lap < VEER / 2 ? lap : VEER - lap;
-  const offY = (climb * 4 * SWAY) / VEER - SWAY;
+  // the weather instead of a line.
+  const offY = wave(tick);
   const baseX = Math.floor(offX), baseY = Math.floor(offY);
   for (let ny = 0; ny < SPAN; ny++) {
     for (let nx = 0; nx < SPAN; nx++) {
@@ -58,12 +75,11 @@ function fronts(tick: number, seed: number) {
         (hash2(nx + baseX, ny + baseY, seed + 7717) * 1000) | 0;
     }
   }
-  slideX = offX - baseX;
-  slideY = offY - baseY;
+  return [offX - baseX, offY - baseY];
 }
 
 /** How hard it is raining at a cell, in thousandths of a storm. */
-function falling(i: number): number {
+function falling(i: number, slideX: number, slideY: number): number {
   const px = (i % SIZE) / PATCH + slideX, ix = px | 0, fx = px - ix;
   const py = ((i / SIZE) | 0) / PATCH + slideY, iy = py | 0, fy = py - iy;
   const o = iy * SPAN + ix;
@@ -80,14 +96,10 @@ function falling(i: number): number {
  * weather can be asked whether it has a preferred direction without simulating
  * a world to look at the trees, which is where the last such fault was found
  * and much too late.
- *
- * Leaves the lattice drawn for the tick and seed asked for, not for any world
- * in hand. That is safe only because `falling` is read nowhere but inside
- * `step`, which draws the front itself first. Keep it that way.
  */
-export function storms(tick: number, seed: number, out: Int32Array): void {
-  fronts(tick, seed);
-  for (let i = 0; i < CELLS; i++) out[i] = falling(i);
+export function rainfall(tick: number, seed: number, out: Int32Array): void {
+  const [slideX, slideY] = fronts(tick, seed);
+  for (let i = 0; i < CELLS; i++) out[i] = falling(i, slideX, slideY);
 }
 
 const OPEN = 2;   // millimetres a day off the surface of standing water, about
@@ -677,7 +689,7 @@ const CLIFF = 6000;   // millimetres of fall past which creep no longer quickens
 // tectonics is excluded from the tick by design. Before this rule the 246
 // depressions worldgen leaves were a gift the world spent: 170 left by year
 // ten, 25 by year two hundred, and a single cell of standing water. With it the
-// count climbs instead — 366 by year twenty and 433 by year one hundred, with
+// count climbs instead — 380 by year twenty and 446 by year one hundred, with
 // 296 cells under standing water against the 53 the same world had without.
 //
 // Written from the channel rather than from the hillside, which is the whole
@@ -717,7 +729,7 @@ const SHED = 1;           // the face fails to the level of the channel below it
 const SLIDE_ODDS = 0.100; // per undercut channel per pass of 64 days. A slope
                           // that stayed wet would go inside two years, but the
                           // wet precondition is intermittent and the eligible
-                          // faces are few: the continent buries about twenty
+                          // faces are few: the continent buries about forty
                           // channels a year at this figure
 // Metres of rock below which a slide is not news. Measured over three years:
 // the continent sheds about forty a year, median fifteen metres, and a record
@@ -1022,7 +1034,7 @@ export function step(w: World): void {
   if (w.tick > 0 && notchOf(level) !== notchOf(sea(w.tick - 1, w.seed))) {
     note(w, "sea", -1, (level / 1000) | 0);
   }
-  fronts(w.tick, w.seed);
+  const [slideX, slideY] = fronts(w.tick, w.seed);
   for (let i = 0; i < CELLS; i++) {
     if (!submerged(w, i)) {
       // A sixteenth of the day's rainfall weight reaches the ground as water,
@@ -1045,7 +1057,7 @@ export function step(w: World): void {
       // dry and still have rivers in it. Drawn for a patch of country rather
       // than a cell, because weather arrives as fronts.
       const fell = (((rain[i] * wet) / 100) | 0) >> 4;
-      const pour = falling(i);
+      const pour = falling(i, slideX, slideY);
       if (pour > 0) {
         const drop = (fell * STORMS * pour) / 1000 | 0;
         const was = water[i];
