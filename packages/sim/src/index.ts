@@ -17,4 +17,4 @@ export { slump } from "./erosion.ts";
 export { generate } from "./worldgen.ts";
 export { Biome, biome, pack, unpack } from "./biome.ts";
 export { FEATURE_MIN, type Feature, type FeatureKind, features } from "./features.ts";
-export { type Budget, type Day, puddle, step } from "./step.ts";
+export { type Budget, type Day, step } from "./step.ts";

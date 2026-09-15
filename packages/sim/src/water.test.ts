@@ -1,7 +1,10 @@
 // The sea, and where the day's water came from and went.
 
 import { describe, expect, it } from "vitest";
-import { generate, step, sea, puddle, type World } from "./index.ts";
+import { generate, step, sea, type World } from "./index.ts";
+// Straight from the module: a sum over one array, for this check and nothing
+// else. It does not belong in what the package offers the world.
+import { puddle } from "./step.ts";
 import { run } from "./fixtures.ts";
 
 describe("the sea crossing a mark", () => {

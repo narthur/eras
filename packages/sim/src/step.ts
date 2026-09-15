@@ -1,6 +1,6 @@
 import { type Event, happening } from "./chronicle.ts";
 import { FIRE_ODDS, burn } from "./fire.ts";
-import { RIVER_EVERY, drain } from "./flood.ts";
+import { RIVER_EVERY, drain } from "./drain.ts";
 import { CELLS, RULE_VERSION, VEG_MAX, type World, clamp, copy, hash2, neighbours } from "./grid.ts";
 import { SHELTER, carry, fills, near } from "./growth.ts";
 import { coastline, notchOf, sea } from "./sea.ts";
