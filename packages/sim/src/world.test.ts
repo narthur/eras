@@ -4,10 +4,16 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  generate, pack, unpack, Biome, features, submerged,
+  generate, pack, unpack, biome, Biome, features, submerged,
   CELLS, SIZE, type World,
 } from "./index.ts";
-import { run, count, same, TICKS } from "./fixtures.ts";
+import { run, same, TICKS } from "./fixtures.ts";
+
+const count = (w: World) => {
+  const t = Array.from({ length: 8 }, () => 0);
+  for (let i = 0; i < CELLS; i++) t[biome(w, i)]++;
+  return t;
+};
 
 let a: World, after: number[];
 
@@ -28,8 +34,8 @@ beforeAll(() => {
 describe("worldgen", () => {
   it("leaves a sea and some land", () => {
     const raw = count(generate(1234));
-    expect(raw[Biome.Ocean] > CELLS * 0.1, "worldgen should leave a sea").toBe(true);
-    expect(raw[Biome.Ocean] < CELLS * 0.9, "worldgen should leave land").toBe(true);
+    expect(raw[Biome.Ocean], "worldgen should leave a sea").toBeGreaterThan(CELLS * 0.1);
+    expect(raw[Biome.Ocean], "worldgen should leave land").toBeLessThan(CELLS * 0.9);
   });
 });
 
@@ -57,11 +63,17 @@ describe("a year of it", () => {
     expect(mean(a), `plants should be taking hold, mean veg ${mean(a)}`).toBeGreaterThan(100);
     expect(after[Biome.River] + after[Biome.Lake],
       "water should have collected somewhere").toBeGreaterThan(20);
-    expect(a.soil.reduce((s, v) => s + v, 0) > 0.9 * generate(1234).soil.reduce((s, v) => s + v, 0),
-      "the island must not scour itself bare").toBe(true);
+    const soilNow = a.soil.reduce((s, v) => s + v, 0);
+    const soilWas = generate(1234).soil.reduce((s, v) => s + v, 0);
+    expect(soilNow, "the island must not scour itself bare").toBeGreaterThan(0.9 * soilWas);
+    // Counted rather than failed on the first: one cell at the ceiling is an
+    // edge case, five thousand is a missing clamp, and the message should be
+    // able to tell them apart.
+    let brimful = 0, firstAt = -1;
     for (let i = 0; i < CELLS; i++) {
-      if (a.water[i] >= 65535) expect.fail("water must not saturate");
+      if (a.water[i] >= 65535) { if (brimful === 0) firstAt = i; brimful++; }
     }
+    expect(brimful, `water must not saturate: ${brimful} cells at the ceiling, first at ${firstAt}`).toBe(0);
   });
 
   it("leaves the land uneven", () => {
@@ -127,8 +139,8 @@ describe("rain comes off the shape of the land", () => {
       else if (climb < -2000) { leeSum += a.rain[i]; leeN++; }
     }
     const [windward, lee] = [wetSum / wetN, leeSum / leeN];
-    expect(windward > lee * 1.25,
-      `the lee of a range should be drier: ${windward.toFixed(0)} against ${lee.toFixed(0)}`).toBe(true);
+    expect(windward,
+      `the lee of a range should be drier: ${windward.toFixed(0)} against ${lee.toFixed(0)}`).toBeGreaterThan(lee * 1.25);
   });
 
   it("keeps the land's mean where the growth rules were tuned for it", () => {
@@ -205,6 +217,6 @@ describe("the things worth naming", () => {
     for (let i = 0; i < CELLS; i++) if (!submerged(a, i)) land++;
     const named = islands.reduce((n, f) => n + f.size, 0);
     expect(named, "an island cannot hold more cells than there is land").toBeLessThanOrEqual(land);
-    expect(named > land * 0.9, `most land should sit in a nameable island, got ${named}/${land}`).toBe(true);
+    expect(named, `most land should sit in a nameable island, got ${named}/${land}`).toBeGreaterThan(land * 0.9);
   });
 });

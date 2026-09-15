@@ -15,7 +15,9 @@ export default defineConfig({
     fileParallelism: true,
     // So the tick rate world.test.ts prints actually reaches the terminal.
     // vitest buffers worker stdout by default and drops it when the run is
-    // piped, which is most of the time here.
+    // piped, which is most of the time here. Global, and there is no per-file
+    // form of it: anything else that starts logging loses vitest's per-test
+    // attribution and can interleave with the other five workers.
     disableConsoleIntercept: true,
   },
 });

@@ -4,17 +4,37 @@
 // the shape of rule that silently destroys mass.
 
 import { beforeAll, describe, expect, it } from "vitest";
-import { slump, CELLS, SIZE, VEG_MAX, type Event } from "./index.ts";
-import { face, ground, packed, valley, drains } from "./fixtures.ts";
+import { slump, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts";
+import { face, ground, packed, valley } from "./fixtures.ts";
 
-// The forty-metre fixture, slumped for forty days. Shared by the checks below
-// because several of them are about the same run seen from different sides.
-let failures = 0, bared = 0;
+/** Whether a cell has anywhere lower to send its water. */
+export const drains = (w: World, i: number) => {
+  const here = w.elev[i] * 100 + w.soil[i];
+  const x = i % SIZE, y = (i / SIZE) | 0;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
+      if (w.elev[ny * SIZE + nx] * 100 + w.soil[ny * SIZE + nx] < here) return true;
+    }
+  }
+  return false;
+};
+
+
+// The forty-metre fixture, slumped for forty days. Built once and read by
+// several checks below, because they are about the same run seen from different
+// sides. The hook only builds it — what it should look like is asserted in a
+// test of its own, so a fixture that comes out wrong fails one named line
+// rather than erroring the hook and reporting the other ten tests as skipped.
+let failures = 0, bared = 0, rock = 0;
+let hill: World;
 const wrote: Event[] = [];
 
 beforeAll(() => {
-  const hill = face();
-  const rock = ground(hill);
+  hill = face();
+  rock = ground(hill);
   // `slump` hands back what it buried, so this collects the record and the
   // ground in one pass. It used to have to drain a process-wide log first, in
   // case a loud slide from another test arrived in the middle of this one.
@@ -25,13 +45,21 @@ beforeAll(() => {
     for (let i = 0; i < CELLS; i++) if (before[i] !== hill.elev[i]) failures++;
   }
   for (let i = 0; i < CELLS; i++) if ((i % SIZE) % 2 === 0 && hill.soil[i] === 0) bared++;
+});
 
+it("fails a saturated face and conserves the ground doing it", () => {
   expect(failures, "a saturated forty-metre face over a river has to fail").toBeGreaterThan(0);
   expect(ground(hill), "and a slide must not create or destroy any ground").toBe(rock);
   expect(bared, `a face that failed should be stripped to rock, ${bared} were`).toBeGreaterThan(0);
+  // Counted rather than asserted per cell: 65,536 `expect` calls costs real
+  // time and floods the output on failure. Counted rather than failed on the
+  // first, because one cell at the ceiling is an edge case and five thousand is
+  // a missing clamp.
+  let piled = 0, firstPile = -1;
   for (let i = 0; i < CELLS; i++) {
-    if (hill.soil[i] >= 65535) expect.fail("debris must not pile past the ceiling");
+    if (hill.soil[i] >= 65535) { if (piled === 0) firstPile = i; piled++; }
   }
+  expect(piled, `debris must not pile past the ceiling: ${piled} cells, first at ${firstPile}`).toBe(0);
 });
 
 describe("the chronicle of a slide", () => {
@@ -135,11 +163,12 @@ describe("the guards that were dead to every other assertion", () => {
     const brimGround = ground(brim);
     brim.tick = 0;
     slump(brim);
-    let filled = 0;
+    let filled = 0, over = 0;
     for (let i = 0; i < CELLS; i++) {
-      if (brim.soil[i] > 65535) expect.fail("soil cannot pass its ceiling");
+      if (brim.soil[i] > 65535) over++;
       if ((i % SIZE) % 2 === 1 && brim.soil[i] === 65535) filled++;
     }
+    expect(over, `soil cannot pass its ceiling: ${over} cells over it`).toBe(0);
     expect(filled, "a channel should take what room it has and stop").toBeGreaterThan(0);
     expect(ground(brim), "and the rest stays on the face").toBe(brimGround);
   });
@@ -196,5 +225,5 @@ it("is held together by roots", () => {
     slump(rooted);
     for (let i = 0; i < CELLS; i++) if (before[i] !== rooted.elev[i]) held++;
   }
-  expect(held < failures, `canopy should hold a face together, ${held} failed against ${failures}`).toBe(true);
+  expect(held, `canopy should hold a face together, ${held} failed against ${failures}`).toBeLessThan(failures);
 });

@@ -1,10 +1,14 @@
-// Worlds and helpers the test files share. Not a test file itself: vitest runs
-// each `*.test.ts` in its own worker, so anything built here is built once per
-// file that asks for it, and the expensive ones are deliberately owned by a
-// single file rather than imported everywhere.
+// Worlds and helpers more than one test file needs. Not a test file itself:
+// vitest runs each `*.test.ts` in its own worker, so anything built here is
+// built once per file that asks for it.
+//
+// Only what is shared or expensive. A cheap helper with one caller belongs
+// beside its caller — `count` and `drains` lived here briefly and went back to
+// the files that use them, because a shared module that is really six private
+// ones is just indirection.
 
 import { expect } from "vitest";
-import { generate, step, CELLS, SIZE, VEG_MAX, biome, type World, type Event } from "./index.ts";
+import { generate, step, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts";
 
 /** Run a world on, and hand back both it and what happened while it did. */
 export const run = (w: World, days: number): [World, Event[]] => {
@@ -15,12 +19,6 @@ export const run = (w: World, days: number): [World, Event[]] => {
     told.push(...day.events);
   }
   return [w, told];
-};
-
-export const count = (w: World) => {
-  const t = Array.from({ length: 8 }, () => 0);
-  for (let i = 0; i < CELLS; i++) t[biome(w, i)]++;
-  return t;
 };
 
 // Byte by byte, by hand. A failed toEqual on two worlds renders a diff of all
@@ -101,21 +99,6 @@ export const valley = (): World => {
   w.elev[slope] = 1000 - 100 + 100;                // ten metres above the channel
   w.water[slope] = 65535;
   return w;
-};
-
-/** Whether a cell has anywhere lower to send its water. */
-export const drains = (w: World, i: number) => {
-  const here = w.elev[i] * 100 + w.soil[i];
-  const x = i % SIZE, y = (i / SIZE) | 0;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
-      if (w.elev[ny * SIZE + nx] * 100 + w.soil[ny * SIZE + nx] < here) return true;
-    }
-  }
-  return false;
 };
 
 export const TICKS = 400;

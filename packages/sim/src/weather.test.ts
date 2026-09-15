@@ -34,8 +34,8 @@ describe("the storm track", () => {
       expect(wave(t) >= wave(0) && wave(t) <= turn,
         `the track wandered off its range at ${t}: ${wave(t)}`).toBe(true);
     }
-    expect(widest <= step1 * 1.0000001,
-      `the track should fold at the turn, not snap: widest step ${widest} against ${step1}`).toBe(true);
+    expect(widest,
+      `the track should fold at the turn, not snap: widest step ${widest} against ${step1}`).toBeLessThanOrEqual(step1 * 1.0000001);
   });
 });
 
@@ -63,8 +63,8 @@ describe("the weather has no latitude", () => {
     // a quarter of one turn, where the ratio has not begun to settle and the
     // bar below stops meaning anything. Tie them together instead: whoever
     // moves VEER has to come back here and re-measure.
-    expect(DAYS >= VEER * 5,
-      `the banding window must cover several turns of the track: ${DAYS} days against a ${VEER}-day turn`).toBe(true);
+    expect(DAYS,
+      `the banding window must cover several turns of the track: ${DAYS} days against a ${VEER}-day turn`).toBeGreaterThanOrEqual(VEER * 5);
   });
 
   it("does not band by latitude", () => {
@@ -100,8 +100,8 @@ describe("the weather has no latitude", () => {
       return out;
     };
     const [rows, cols] = [spread(SIZE, 1), spread(1, SIZE)];
-    expect(rows < cols * 3,
-      `rain must not band by latitude: row spread ${(rows * 1e4).toFixed(1)} against column ${(cols * 1e4).toFixed(1)}`).toBe(true);
+    expect(rows,
+      `rain must not band by latitude: row spread ${(rows * 1e4).toFixed(1)} against column ${(cols * 1e4).toFixed(1)}`).toBeLessThan(cols * 3);
   });
 });
 
@@ -116,17 +116,17 @@ describe("what the ground can carry", () => {
   const ROOTED = 1200, WET_SOIL = 100;   // deep enough soil, wet enough to drink
 
   it("separates forest country from grass country by rain", () => {
-    expect(carry(150, ROOTED, WET_SOIL) > carry(110, ROOTED, WET_SOIL),
-      "rain has to be what separates forest country from grass country").toBe(true);
-    expect(fills(carry(150, ROOTED, WET_SOIL)) > fills(carry(100, ROOTED, WET_SOIL)),
-      "and it has to show in how fast the ground fills, not only in the ceiling").toBe(true);
+    expect(carry(150, ROOTED, WET_SOIL),
+      "rain has to be what separates forest country from grass country").toBeGreaterThan(carry(110, ROOTED, WET_SOIL));
+    expect(fills(carry(150, ROOTED, WET_SOIL)),
+      "and it has to show in how fast the ground fills, not only in the ceiling").toBeGreaterThan(fills(carry(100, ROOTED, WET_SOIL)));
   });
 
   it("holds thin and dry ground back", () => {
-    expect(carry(150, 200, WET_SOIL) < carry(150, ROOTED, WET_SOIL),
-      "thin soil holds a place back whatever the sky is doing").toBe(true);
-    expect(carry(150, ROOTED, 30) < carry(150, ROOTED, WET_SOIL),
-      "and drought bites ground that cannot hold what falls on it").toBe(true);
+    expect(carry(150, 200, WET_SOIL),
+      "thin soil holds a place back whatever the sky is doing").toBeLessThan(carry(150, ROOTED, WET_SOIL));
+    expect(carry(150, ROOTED, 30),
+      "and drought bites ground that cannot hold what falls on it").toBeLessThan(carry(150, ROOTED, WET_SOIL));
     expect(carry(80, ROOTED, WET_SOIL), "nothing grows where nothing falls").toBe(0);
   });
 });

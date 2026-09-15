@@ -31,7 +31,7 @@ describe("a mature dry world", () => {
     // canopy — so a year of it taking a sixth of the continent is the rule
     // working, not running away. What must still hold is that a year of fire
     // cannot clear the place.
-    expect(burnt < CELLS / 5, `fire must not take the continent, burnt ${burnt}`).toBe(true);
+    expect(burnt, `fire must not take the continent, burnt ${burnt}`).toBeLessThan(CELLS / 5);
   });
 });
 
@@ -45,7 +45,7 @@ describe("the record agrees with the ground", () => {
     // the 500 this counts by the end of the year, so what is still visibly bare
     // is a floor under what was reported, never a match for it.
     const took = lit.reduce((n, e) => n + e.size, 0);
-    expect(took >= burnt, `the fires reported ${took} cells and ${burnt} are still bare`).toBe(true);
+    expect(took, `the fires reported ${took} cells and ${burnt} are still bare`).toBeGreaterThanOrEqual(burnt);
   });
 
   it("does not burn the average cell twice a year", () => {
@@ -56,7 +56,7 @@ describe("the record agrees with the ground", () => {
     // cell burns more than once a year is not a world with fires in it, it is a
     // world on fire.
     const took = lit.reduce((n, e) => n + e.size, 0);
-    expect(took < dryLand, `the average cell must not burn twice a year: ${took} over ${dryLand}`).toBe(true);
+    expect(took, `the average cell must not burn twice a year: ${took} over ${dryLand}`).toBeLessThan(dryLand);
   });
 
   it("files every fire where the ground actually burned", () => {

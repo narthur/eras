@@ -8,7 +8,7 @@
 
 import { expect, it } from "vitest";
 import { generate, step, pack, unpack, slump, coastline, submerged, CELLS, type World, type Event } from "./index.ts";
-import { run, same } from "./fixtures.ts";
+import { run, same, TICKS } from "./fixtures.ts";
 
 it("does not touch the world it was given", () => {
   // The whole guarantee is a single `copy(prev)` at the top of a two-hundred
@@ -76,8 +76,15 @@ it("steps a world off the disk like one that never left", () => {
   // The round trip in world.test.ts compares and stops, which cannot see state
   // that lives outside the World and so does not survive packing — the kind of
   // thing every buffer removed here used to be.
+  //
+  // A world-year deep, not forty days. The state this is hunting for only
+  // accumulates as a world runs — rivers cut, the coastline settles, the caches
+  // fill — and forty days is barely past worldgen, where a resumed world and a
+  // live one would agree whatever was leaking. Splitting the old script cost
+  // this test its mature fixture and nothing noticed, because the message was
+  // still true of the weaker world.
   const days = 40;
-  const start = run(generate(1234), 40)[0];
+  const start = run(generate(1234), TICKS)[0];
   const [live, fromMemory] = run(unpack(pack(start)), days);
   const [resumed, fromDisk] = run(unpack(pack(start)), days);
   same(pack(resumed), pack(live), "a world resumed from storage must step like one that never left");
