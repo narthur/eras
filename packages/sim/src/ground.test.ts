@@ -8,7 +8,7 @@ import { slump, CELLS, SIZE, VEG_MAX, type World, type Event } from "./index.ts"
 import { face, ground, packed, valley } from "./fixtures.ts";
 
 /** Whether a cell has anywhere lower to send its water. */
-export const drains = (w: World, i: number) => {
+const drains = (w: World, i: number) => {
   const here = w.elev[i] * 100 + w.soil[i];
   const x = i % SIZE, y = (i / SIZE) | 0;
   for (let dy = -1; dy <= 1; dy++) {
@@ -21,7 +21,6 @@ export const drains = (w: World, i: number) => {
   }
   return false;
 };
-
 
 // The forty-metre fixture, slumped for forty days. Built once and read by
 // several checks below, because they are about the same run seen from different
